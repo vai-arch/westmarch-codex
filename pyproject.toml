@@ -1,0 +1,21 @@
+[tool.ruff]
+line-length = 200
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[project]
+name = "dragon-codex"
+version = "0.1.0"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["utils*"]
