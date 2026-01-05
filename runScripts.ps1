@@ -2,7 +2,7 @@ conda activate westmarch
 
 # List of Python modules to run
 $modules = @(
-    "src.ingestion.ing_01_parse_raw_books"
+    "src.extraction.01_preprocess_book"
 )
 
 foreach ($module in $modules) {
