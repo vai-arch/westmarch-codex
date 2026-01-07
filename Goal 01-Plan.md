@@ -18,7 +18,7 @@
 
 ## Subgoal 1.1: Book Preprocessing
 
-**Status:** DONE !!!
+**Status:** 🟢 Complete
 
 **Deliverable:** `src/extraction/01_preprocess_book.py`
 
@@ -97,7 +97,7 @@
 
 ## Subgoal 1.2: Raw Entity Extraction (NLP-based)
 
-**Status:** 🔴 Not Started
+**Status:** 🟢 Complete
 
 **Deliverable:** `02_extract_entities_nlp.py`
 
@@ -126,18 +126,64 @@
 
 - No crashes, processes all 19 chapters
 
-**Validation:**
+### Statistics
 
-```bash
-python 02_extract_entities_nlp.py
-# Should output: "Extracted X PERSON, Y LOC, Z GPE entities across Book 0"
-```
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+|                               |   characters |   locations |   races |   objects |   events |   groups |   concepts |
++===============================+==============+=============+=========+===========+==========+==========+============+
+| book_num: 0 - chapter_num: 1  |           15 |           6 |       2 |         7 |        1 |        1 |          1 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 2  |           17 |           6 |       2 |         7 |        1 |        1 |          1 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 3  |            4 |           5 |       3 |         3 |        1 |        1 |          2 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 4  |           14 |          10 |       3 |        10 |        2 |        1 |          2 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 5  |            3 |           7 |       2 |         7 |        2 |        0 |          2 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 6  |           22 |           4 |       3 |         5 |        3 |        1 |          2 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 7  |           15 |           6 |       2 |         1 |        1 |        1 |          1 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 8  |           13 |           4 |       3 |         6 |        2 |        1 |          2 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 9  |           15 |           9 |       3 |         5 |        1 |        1 |          1 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 10 |           15 |           8 |       2 |         3 |        2 |        1 |          2 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 11 |           10 |           8 |       2 |         4 |        1 |        1 |          2 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 12 |            9 |           4 |       2 |         4 |        1 |        1 |          1 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 13 |           15 |           3 |       1 |         7 |        1 |        1 |          1 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 14 |            7 |           4 |       1 |         2 |        1 |        1 |          2 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 15 |           14 |           3 |       1 |         3 |        2 |        1 |          1 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 16 |            7 |           3 |       3 |         3 |        0 |        1 |          2 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 17 |           17 |           3 |       4 |         3 |        1 |        2 |          2 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 18 |           13 |           5 |       2 |         2 |        2 |        1 |          1 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| book_num: 0 - chapter_num: 19 |            4 |           6 |       2 |         5 |        1 |        2 |          1 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+| TOTAL                         |          229 |         104 |      43 |        87 |       26 |       20 |         29 |
++-------------------------------+--------------+-------------+---------+-----------+----------+----------+------------+
+Total Duration: 4h 29m 54.3s
+Configuration:
+model: qwen2.5:32b-instruct-q4_K_M
+base_url: <http://localhost:11434>
+temperature: 0.1
+max_tokens: 32768
+timeout: 1800
 
 ---
 
 ## Subgoal 1.3: Entity Consolidation & Alias Detection
 
-**Status:** 🔴 Not Started
+**Status:** 🟡 In Progress  
 
 **Deliverable:** `03_consolidate_entities.py`
 
@@ -210,9 +256,79 @@ python 03_consolidate_entities.py
 # Should show spoiler-safe tracking enabled
 ```
 
+Goal 1.4: Semantic chunking with entity metadata
+
+Chunk narrative (skip songs)
+Tag chunks with entities present
+
+Goal 1.5: Dense embeddings + vector store
+
+Embed chunks
+Build ChromaDB collection
+
+Goal 1.6: Simple retrieval + test queries
+
+Basic semantic search
+Test with 10-20 queries
+Identify gaps
+
+## Subgoal 1.4: Entity Enrichment & Knowledge Profiles
+
+**Status:** 🔴 Not Started
+
+**Deliverable:** `05_enrich_entities.py`
+
+**Input:**
+- `data/processed/entities_deduplicated.json`
+- `data/processed/entity_mentions_index.json`
+- Full chapter text corpus (processed)
+
+**Output:**
+- `data/processed/entity_profiles/`
+  - `characters.json`
+  - `locations.json`
+  - `races.json`
+  - `objects.json`
+  - `groups.json`
+  - `concepts.json`
+- Optional: `data/processed/entity_knowledge_graph.json`
+
+**Description:**  
+After entity extraction, deduplication, and validation, perform an enrichment pass to build **wiki-style knowledge profiles** for each entity.  
+For each entity, gather all textual mentions across the book and use an LLM to generate a consolidated, canonical description capturing its defining traits, context, and narrative significance.
+
+This creates a structured **entity knowledge base** separate from raw narrative chunks.
+
+**Enrichment Strategy:**
+- Aggregate all paragraphs mentioning a given entity (canonical name + aliases)
+- Prompt the LLM to synthesize:
+  - Description / definition
+  - Characteristics and attributes
+  - Role in the story
+  - Relationships to other entities
+  - Notable appearances (book/chapter range)
+- Output is factual, spoiler-aware, and grounded only in provided text
+
+**Success Metric:**
+- Each major entity (e.g., *Hobbits*, *Bilbo Baggins*, *The Shire*) has a single, rich profile
+- Profiles are consistent, non-duplicated, and alias-aware
+- Entity profiles can answer factual queries without needing raw chapter text
+- Profiles improve RAG retrieval quality for:
+  - “Tell me about Hobbits”
+  - “Who is Thorin Oakenshield?”
+  - “What is the significance of the Lonely Mountain?”
+- Manual spot-check confirms summaries are accurate, comprehensive, and spoiler-aware
+
+**Why This Matters:**
+- Enables **two-tier RAG**:
+  1. Retrieve entity profiles for factual grounding  
+  2. Retrieve narrative chunks for story context
+- Reduces hallucination by anchoring LLM responses to curated knowledge
+- Establishes foundation for a knowledge graph and advanced reasoning
+
 ---
 
-## Subgoal 1.4: Validation & Stats
+## Subgoal 1.5: Validation & Stats
 
 **Status:** 🔴 Not Started
 
@@ -272,12 +388,3 @@ All entity data must support:
 - 🟡 In Progress
 - 🟢 Complete
 - ⚠️ Blocked/Issues
-
----
-
-## Next Steps
-
-1. Create project chat for Subgoal 1.1
-2. Obtain The Hobbit source file (.txt or .epub)
-3. Set up folder structure: `data/raw/` and `data/processed/`
-4. Begin implementation of `01_preprocess_book.py`

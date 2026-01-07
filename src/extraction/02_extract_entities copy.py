@@ -28,17 +28,11 @@ from src.utils.llm_access.ollama_llm import prompt_builder, testing_connection
 from src.utils.util_files_functions import load_json_from_file, save_json_to_file
 from src.utils.util_statistics import total_statistics_logging
 
-REASONING_MODEL_CONFIG = None
-FAST_MODEL_CONFIG = None
+LLM_CONFIG = None
 ENTITY_TYPES = None
-ENTITY_EXTRACTION_CONFIG = None
-ACCUMULATED_ENTITY_TYPES = None
 ENTITY_SCHEMAS = None
-UNIFIED_EXTRACTION_PROMPT = None
-VALIDATION_PROMPT = None
+SINGLE_ENTITY_EXTRACTION_PROMPT = None
 FILE_ENTITIES_RAW = None
-ENTITY_EXTRACTION = None
-checkpoint_manager = None
 
 
 class _CheckpointManager:
@@ -214,200 +208,167 @@ def validate_extraction_structure(data: Dict[str, Any]) -> List[str]:
 # =============================================================================
 
 
-def build_context_section(accumulated_entities: Dict[str, List[Dict[str, str]]]) -> str:
-    """Build context section from accumulated entities across all types."""
+def normalize_entity_fields(entities: List[Dict[str, Any]], entity_type: str) -> List[Dict[str, Any]]:
+    """
+    Normalize entity fields to match expected schema.
+    Fix common LLM mistakes like location_name -> name.
+    """
+    # Field name corrections
+    name_corrections = {
+        "location_name": "name",
+        "event_name": "name",
+        "character_name": "name",
+        "object_name": "name",
+        "group_name": "name",
+        "concept_id": "name",
+        "song_title": "name",
+        "title": "name",
+    }
 
-    if not any(accumulated_entities.values()):
+    for entity in entities:
+        # Fix name fields
+        for wrong_name, correct_name in name_corrections.items():
+            if wrong_name in entity and correct_name not in entity:
+                entity[correct_name] = entity.pop(wrong_name)
+
+        # Remove empty descriptions (cleanup)
+        if "description" in entity and entity["description"] == "":
+            entity.pop("description")
+
+    return entities
+
+
+def build_context_section(previous_entities: List[Dict[str, str]], entity_type: str) -> str:
+    """
+    Build the context section showing previously extracted entities.
+
+    Args:
+        previous_entities: Lightweight context from previous chapters
+        entity_type: Current entity type being extracted
+
+    Returns:
+        Formatted context string for prompt
+    """
+    if not previous_entities:
         return ""
 
-    context_lines = ["\nPREVIOUSLY EXTRACTED ENTITIES FROM EARLIER CHAPTERS:", "Use these for consistent naming and to recognize aliases:\n"]
+    context_lines = [f"\nPREVIOUSLY EXTRACTED {entity_type.upper()} FROM EARLIER CHAPTERS:", "Use these to maintain consistent naming and recognize aliases:\n"]
 
-    for entity_type in ACCUMULATED_ENTITY_TYPES:
-        entities = accumulated_entities.get(entity_type, [])
-        if not entities:
-            continue
+    for entity in previous_entities[:50]:  # Limit to 50 to avoid token bloat
+        name = entity.get("name", "")
+        aliases = entity.get("aliases", [])
+        if aliases:
+            context_lines.append(f"- {name} (also called: {', '.join(aliases)})")
+        else:
+            context_lines.append(f"- {name}")
 
-        context_lines.append(f"\n{entity_type.upper()}:")
-        for entity in entities[:20]:  # Limit per type
-            name = entity.get("name", "")
-            aliases = entity.get("aliases", [])
-            if aliases:
-                context_lines.append(f"  - {name} (also: {', '.join(aliases)})")
-            else:
-                context_lines.append(f"  - {name}")
+    if len(previous_entities) > 50:
+        context_lines.append(f"... and {len(previous_entities) - 50} more")
 
     context_lines.append("")
     return "\n".join(context_lines)
 
 
-def update_accumulated_entities(accumulated: Dict[str, List[Dict[str, str]]], new_entities: Dict[str, Any]):
-    """Update accumulated entities with new chapter's entities."""
-
-    for entity_type in ACCUMULATED_ENTITY_TYPES:
-        entities = new_entities.get(entity_type, [])
-
-        for entity in entities:
-            name = entity.get("name", "")
-            aliases = entity.get("aliases", [])
-
-            if not name:
-                continue
-
-            # Check if already exists
-            existing = None
-            for acc_entity in accumulated[entity_type]:
-                if acc_entity["name"] == name:
-                    existing = acc_entity
-                    break
-
-            if existing:
-                # Merge aliases
-                existing_aliases = set(existing.get("aliases", []))
-                new_aliases = set(aliases)
-                existing["aliases"] = list(existing_aliases | new_aliases)
-            else:
-                # Add new
-                accumulated[entity_type].append({"name": name, "aliases": aliases if aliases else []})
-
-
-# =============================================================================
-# TWO-STAGE EXTRACTION
-# =============================================================================
-
-
-def stage1_unified_extraction(chapter_text: str, chapter_num: int, chapter_title: str, accumulated_entities: Dict[str, List[Dict[str, str]]], max_retries: int = 2) -> List[Dict[str, Any]]:
+def extract_single_entity_type(entity_type: str, chapter_text: str, chapter_num: int, chapter_title: str, previous_entities: List[Dict[str, str]], max_retries: int = 2) -> List[Dict[str, Any]]:
     """
-    Stage 1: Extract all entities in unified format.
-    Splits long chapters into chunks, extracts from each, merges results.
+    Extract a single entity type with retry logic and context from previous chapters.
+
+    Args:
+        entity_type: Type of entity to extract
+        chapter_text: Full chapter text
+        chapter_num: Chapter number
+        chapter_title: Chapter title
+        previous_entities: Lightweight context from previous chapters (same type only)
+        max_retries: Maximum retry attempts for full extraction
 
     Returns:
-        List of entities with: entity_type, name, description, aliases
+        List of extracted entities
     """
+    schema = ENTITY_SCHEMAS[entity_type]
+    entity_singular = entity_type.rstrip("s")
 
-    ## TODO add some overlap between chunks and add accumulated entities from prior chunks
-    # Split chapter into chunks
-    chunks = []
-    chunk_size = ENTITY_EXTRACTION_CONFIG.get("context_window_chars", 10000000)
+    # Build context section
+    if entity_type in ["characters", "locations", "objects", "groups", "races"]:
+        context_section = build_context_section(previous_entities, entity_type)
+        print(context_section)
+    else:
+        context_section = ""
 
-    for i in range(0, len(chapter_text), chunk_size):
-        chunks.append(chapter_text[i : i + chunk_size])
-
-    # If single chunk, process normally
-    if len(chunks) == 1:
-        chunks = [chapter_text]
-
-    # Build context once (shared across chunks)
-    context_section = build_context_section(accumulated_entities)
-
-    all_entities = []
-
-    # Extract from each chunk
-    for chunk_idx, chunk in enumerate(chunks):
-        print(f"[chunk {chunk_idx + 1}/{len(chunks)}] ", end="")
-
-        prompt = UNIFIED_EXTRACTION_PROMPT.format(context_section=context_section, chapter_text=chunk, chapter_num=chapter_num, chapter_title=chapter_title)
-
-        for attempt in range(max_retries + 1):
-            try:
-                result = prompt_builder(prompt, REASONING_MODEL_CONFIG)
-                entities = result.get("entities", [])
-                all_entities.extend(entities)
-                break
-
-            except Exception as e:
-                if attempt < max_retries:
-                    print(f"⚠️  Retry {attempt + 1}/{max_retries}...", end=" ")
-                    continue
-                else:
-                    print(f"✗ Chunk {chunk_idx + 1} failed: {e}")
-                    break
-
-    return all_entities
-
-
-def stage2_validate_and_structure(raw_entities: List[Dict[str, Any]], chapter_num: int, chapter_title: str, max_retries: int = 2) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Stage 2: Validate and structure entities with proper schemas.
-
-    Returns:
-        Dict with all 8 entity types properly structured
-    """
-
-    if not raw_entities:
-        # Return empty structure
-        return {entity_type: [] for entity_type in ENTITY_TYPES}
-
-    # Build schemas for prompt
-    schemas = {
-        "characters_schema": json.dumps(ENTITY_SCHEMAS["characters"]["format"], indent=2),
-        "locations_schema": json.dumps(ENTITY_SCHEMAS["locations"]["format"], indent=2),
-        "races_schema": json.dumps(ENTITY_SCHEMAS["races"]["format"], indent=2),
-        "objects_schema": json.dumps(ENTITY_SCHEMAS["objects"]["format"], indent=2),
-        "events_schema": json.dumps(ENTITY_SCHEMAS["events"]["format"], indent=2),
-        "groups_schema": json.dumps(ENTITY_SCHEMAS["groups"]["format"], indent=2),
-        "concepts_schema": json.dumps(ENTITY_SCHEMAS["concepts"]["format"], indent=2),
-        "songs_schema": json.dumps(ENTITY_SCHEMAS["songs"]["format"], indent=2),
-    }
-
-    # Build prompt
-    prompt = VALIDATION_PROMPT.format(raw_entities=json.dumps(raw_entities, indent=2), chapter_num=chapter_num, chapter_title=chapter_title, **schemas)
+        # Build prompt with context
+    prompt = SINGLE_ENTITY_EXTRACTION_PROMPT.format(
+        entity_type=entity_type,
+        entity_singular=entity_singular,
+        description=schema["description"],
+        format=json.dumps(schema["format"], indent=2),
+        example=json.dumps(schema["example"], indent=2),
+        context_section=context_section,
+        chapter_text=chapter_text,
+        chapter_num=chapter_num,
+        chapter_title=chapter_title,
+    )
 
     for attempt in range(max_retries + 1):
         try:
-            result = prompt_builder(prompt, FAST_MODEL_CONFIG)
+            # Attempt extraction (includes internal fix attempt)
+            result = prompt_builder(prompt, LLM_CONFIG)
+            extracted = result.get(entity_type, [])
 
-            # Ensure all entity types present
-            structured = {entity_type: result.get(entity_type, []) for entity_type in ENTITY_TYPES}
-            return structured
+            # Normalize fields
+            extracted = normalize_entity_fields(extracted, entity_type)
 
-        except Exception as e:
+            return extracted
+        except Exception:
             if attempt < max_retries:
                 print(f"⚠️  Retry {attempt + 1}/{max_retries}...", end=" ")
                 continue
             else:
-                print(f"✗ Stage 2 failed: {e}")
-                return {entity_type: [] for entity_type in ENTITY_TYPES}
+                print(f"✗ Failed after {max_retries} retries")
+                return []
 
-    return {entity_type: [] for entity_type in ENTITY_TYPES}
+    return []
 
 
 def extract_entities_from_chapter(chapter: Dict[str, Any], accumulated_entities: Dict[str, List[Dict[str, str]]]) -> Dict[str, Any]:
     """
-    Two-stage extraction for a single chapter.
+    Extract entities from a single chapter by looping through entity types.
+    Uses accumulated context from previous chapters for consistency.
+
+    Args:
+        chapter: Chapter data with paragraphs
+        accumulated_entities: Accumulated lightweight contexts per entity type
+
+    Returns:
+        Extracted entities for this chapter (all types)
     """
+    # Combine paragraphs into chapter text
     chapter_text = "\n\n".join(chapter["paragraphs"])
     chapter_num = chapter["chapter_num"]
     chapter_title = chapter["chapter_title"]
 
+    # Initialize result structure
+    entities = {"book_num": chapter["book_num"], "chapter_num": chapter_num, "chapter_title": chapter_title}
+
     print(f"\n📖 Chapter {chapter_num}: {chapter_title}")
 
-    # Stage 1: Unified extraction
-    print("  Stage 1: Extracting all entities...", end=" ")
-    raw_entities = stage1_unified_extraction(chapter_text, chapter_num, chapter_title, accumulated_entities)
-    print(f"✓ {len(raw_entities)} entities found")
-
-    # Stage 2: Validate and structure
-    print("  Stage 2: Validating and structuring...", end=" ")
-    structured_entities = stage2_validate_and_structure(raw_entities, chapter_num, chapter_title)
-
-    # Count totals
-    total = sum(len(structured_entities.get(et, [])) for et in ENTITY_TYPES)
-    print(f"✓ {total} entities structured")
-
-    # Show breakdown
+    # Loop through each entity type
     for entity_type in ENTITY_TYPES:
-        count = len(structured_entities.get(entity_type, []))
-        if count > 0:
-            print(f"    {entity_type:12} {count}")
+        print(f"  {entity_type:12} ", end="")
 
-    # Build final structure
-    result = {"book_num": chapter["book_num"], "chapter_num": chapter_num, "chapter_title": chapter_title}
-    result.update(structured_entities)
+        # Get context from previous chapters (same type only)
+        previous_entities = accumulated_entities.get(entity_type, [])
 
-    # Update accumulated entities
-    update_accumulated_entities(accumulated_entities, structured_entities)
+        # Extract this entity type
+        extracted = extract_single_entity_type(
+            entity_type=entity_type, chapter_text=chapter_text, chapter_num=chapter_num, chapter_title=chapter_title, previous_entities=previous_entities, max_retries=2
+        )
 
-    return result
+        entities[entity_type] = extracted
+        print(f"→ {len(extracted)} found")
+
+        # Merge into accumulated context for next chapter
+        merge_into_accumulated(accumulated_entities[entity_type], extracted)
+
+    return entities
 
 
 # =============================================================================
@@ -416,10 +377,21 @@ def extract_entities_from_chapter(chapter: Dict[str, Any], accumulated_entities:
 
 
 def extract_all_entities(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Extract entities from all chapters with checkpoint support."""
+    """
+    Extract entities from all chapters with checkpoint support.
 
-    all_entities, accumulated_entities, start_chapter = checkpoint_manager.load_checkpoint()
+    Args:
+        chapters: List of chapter data
 
+    Returns:
+        List of entity extractions per chapter
+    """
+    checkpointManager = _CheckpointManager()
+
+    # Load checkpoint if exists
+    all_entities, accumulated_entities, start_chapter = checkpointManager.load_checkpoint()
+
+    # Get chapters to process
     chapters_to_process = [ch for ch in chapters if ch["chapter_num"] >= start_chapter]
 
     if not chapters_to_process:
@@ -427,21 +399,27 @@ def extract_all_entities(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         return all_entities
 
     print(f"\n🔍 Processing {len(chapters_to_process)} chapters (starting from {start_chapter})...")
-    print(f"Using model: {REASONING_MODEL_CONFIG['model']}")
+    print(f"Using model: {LLM_CONFIG['model']}")
 
+    # Process chapters
     for chapter in chapters_to_process:
         try:
             start_time = time.time()
 
+            # Extract entities from this chapter
             entities = extract_entities_from_chapter(chapter, accumulated_entities)
 
             elapsed = time.time() - start_time
 
+            # Add to results
             all_entities.append(entities)
 
-            checkpoint_manager.save_checkpoint(all_entities, accumulated_entities)
+            # Save checkpoint after each chapter
+            checkpointManager.save_checkpoint(all_entities, accumulated_entities)
 
-            print(f"  ✅ Completed in {elapsed:.1f}s - Checkpoint saved\n")
+            # Stats
+            total_entities = sum(len(entities.get(et, [])) for et in ENTITY_TYPES)
+            print(f"  ✅ Completed in {elapsed:.1f}s ({total_entities} entities) - Checkpoint saved")
 
         except Exception as e:
             print(f"\n❌ Critical error processing chapter {chapter['chapter_num']}: {e}")
@@ -500,33 +478,16 @@ def main():
 
     config = get_config()
     paths = get_paths()
-    global \
-        REASONING_MODEL_CONFIG, \
-        FAST_MODEL_CONFIG, \
-        ENTITY_TYPES, \
-        ENTITY_SCHEMAS, \
-        UNIFIED_EXTRACTION_PROMPT, \
-        FILE_ENTITIES_RAW, \
-        VALIDATION_PROMPT, \
-        checkpoint_manager, \
-        ACCUMULATED_ENTITY_TYPES, \
-        ENTITY_EXTRACTION_CONFIG
-    REASONING_MODEL_CONFIG = config.REASONING_MODEL_CONFIG
-    FAST_MODEL_CONFIG = config.FAST_MODEL_CONFIG
-    ENTITY_EXTRACTION_CONFIG = config.ENTITY_EXTRACTION_CONFIG
+    global LLM_CONFIG, ENTITY_TYPES, ENTITY_SCHEMAS, SINGLE_ENTITY_EXTRACTION_PROMPT, FILE_ENTITIES_RAW
+    LLM_CONFIG = config.LLM_CONFIG
     ENTITY_TYPES = config.ENTITY_TYPES
     ENTITY_SCHEMAS = config.ENTITY_SCHEMAS
-    UNIFIED_EXTRACTION_PROMPT = config.UNIFIED_EXTRACTION_PROMPT
-    VALIDATION_PROMPT = config.VALIDATION_PROMPT
+    SINGLE_ENTITY_EXTRACTION_PROMPT = config.SINGLE_ENTITY_EXTRACTION_PROMPT
     FILE_ENTITIES_RAW = paths.FILE_ENTITIES_RAW
-    ACCUMULATED_ENTITY_TYPES = config.ACCUMULATED_ENTITY_TYPES
-
-    checkpoint_manager = _CheckpointManager()
 
     chapters = load_json_from_file(paths.FILE_BOOK_00_PROCESSED)
 
-    testing_connection(FAST_MODEL_CONFIG)
-    testing_connection(REASONING_MODEL_CONFIG)
+    testing_connection(LLM_CONFIG)
 
     # Extract entities
     all_entities = extract_all_entities(chapters)
@@ -544,7 +505,7 @@ def main():
         "ENTITIES EXTRACTION",
         "02_extract_entities",
         tables=True,
-        configuration_section=REASONING_MODEL_CONFIG,
+        configuration_section=LLM_CONFIG,
     )
 
 

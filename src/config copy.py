@@ -24,30 +24,15 @@ class Config:
             "CHAPTER_TITLE_FALLBACK_P_INDEX": 1
         }
 
-        # High-quality model for complex reasoning tasks
-        self.REASONING_MODEL_CONFIG = {
+        self.LLM_CONFIG = {
             "model": "qwen2.5:32b-instruct-q4_K_M",
             "base_url": "http://localhost:11434",
             "temperature": 0.1,
             "max_tokens": 32768,
-            "timeout": 1800,
+            "timeout": 3600,
         }
 
-        # Fast model for structured tasks (validation, formatting, simple extraction)
-        self.FAST_MODEL_CONFIG = {
-            "model": "qwen2.5:7b-instruct",
-            "base_url": "http://localhost:11434",
-            "temperature": 0.1,
-            "max_tokens": 32768,
-            "timeout": 900,  # Shorter timeout
-        }
-
-        # Keep backward compatibility
-        self.LLM_CONFIG = self.REASONING_MODEL_CONFIG  # Default to reasoning model
-
-        self.ENTITY_EXTRACTION_CONFIG = {
-            "context_window_chars": 10000,
-        }
+        # fmt: on
 
         self.ENTITY_TYPES = [
             "characters",
@@ -56,18 +41,10 @@ class Config:
             "objects",
             "events",
             "groups",
-            "concepts"
+            "concepts",
+            "songs",
         ]
 
-        self.ACCUMULATED_ENTITY_TYPES = [
-            "characters",
-            "locations",
-            "races",
-            "objects",
-            "groups",
-            "concepts"
-        ]
-        # fmt: on
         # Entity schemas with examples
         self.ENTITY_SCHEMAS = {
             "characters": {
@@ -201,113 +178,58 @@ class Config:
             },
         }
 
-        self.UNIFIED_EXTRACTION_PROMPT = """You are an expert literary analyst extracting entities from "The Hobbit" by J.R.R. Tolkien.
+        # Single dynamic extraction prompt
+        self.SINGLE_ENTITY_EXTRACTION_PROMPT = """You are an expert literary analyst extracting entities from "The Hobbit" by J.R.R. Tolkien.
 
-            TASK: Extract ALL entities from this chapter in a SINGLE pass.
+            TASK: Extract ALL {entity_type} from this chapter.
 
-            ENTITY TYPES TO EXTRACT:
-            1. character - people, creatures, beings (Bilbo, Gandalf, Smaug, any dwarf, goblins, etc.)
-            2. location - places, regions, buildings (Bag End, Shire, Lonely Mountain, rivers, forests, etc.)
-            3. object - physical items ONLY (swords, rings, treasure, maps, clothing, tools - NOT people or places)
-            4. event - significant happenings (The Unexpected Party, battles, discoveries, meetings)
-            5. group - organizations, companies (Thorin and Company, White Council, armies)
-            6. race - species/peoples (Hobbits, Dwarves, Elves, Dragons, Goblins)
-            7. concept - abstract ideas ONLY (dragon-sickness, fate, prophecy, honor - NOT people, places, or objects)
+            WHAT ARE {entity_type}?
+            {description}
+
+            =============================================================================
+            MANDATORY SCHEMA - YOU MUST USE THESE EXACT FIELDS (NO OTHER FIELDS ALLOWED)
+            =============================================================================
+
+            {format}
 
             CRITICAL RULES:
-            1. Extract EVERYTHING - major and minor entities
-            2. For each entity provide: entity_type, name, description, aliases (if any)
-            3. Be thorough - if 13 dwarves are mentioned, extract all 13 individually
-            4. Concepts = abstract ideas ONLY (NOT characters like "Smaug" or places like "Mountain")
-            5. Objects = inanimate items ONLY (NOT people or creatures)
+            1. Use ONLY the field names shown above - DO NOT invent new fields
+            2. DO NOT use: "description", "importance_to_plot", "location_name", "event_name", "concept_name", "concept_id"
+            3. Every entity MUST have ALL fields from the schema above
+            4. If a field value is unknown: use null (for text) or [] (for arrays)
+            5. Extract ONLY {entity_type} - do not extract entities from other categories
+            6. If NO {entity_type} exist in this chapter, return empty array []
+            7. "ALL" means EVERY SINGLE mention - even minor characters who appear once
+            8. Include background characters, unnamed groups, briefly mentioned entities
+            9. Better to over-extract than under-extract - we will filter later
+            10. If dwarves are mentioned, extract EACH dwarf individually by name
             {context_section}
+
+            EXAMPLE showing EXACT field names and structure:
+            {example}
+
+            VERIFY BEFORE RETURNING:
+            - Does each entity have ALL required fields?
+            - Are field names EXACTLY as shown in schema?
+            - Are you extracting the right entity type (not mixing categories)?
 
             CHAPTER TEXT:
             {chapter_text}
 
-            Return ONLY valid JSON in this format:
+            =============================================================================
+            OUTPUT FORMAT (use EXACT field names from schema)
+            =============================================================================
+
             {{
             "chapter_num": {chapter_num},
             "chapter_title": "{chapter_title}",
-            "entities": [
-                {{
-                "entity_type": "character",
-                "name": "Bilbo Baggins",
-                "description": "A hobbit chosen as burglar for the quest",
-                "aliases": ["Mr. Baggins", "the hobbit"]
-                }},
-                {{
-                "entity_type": "location",
-                "name": "Bag End",
-                "description": "Bilbo's comfortable hobbit-hole",
-                "aliases": ["Bilbo's home"]
-                }}
-                // ... all other entities
+            "{entity_type}": [
+                // Each entity must have ALL fields from schema above
+                // Use exact field names - no variations allowed
             ]
             }}
-            """
-        # Single dynamic extraction prompt
-        self.VALIDATION_PROMPT = """You are validating and enriching extracted entities from "The Hobbit".
 
-            TASK: Take the raw entity extraction and produce properly structured output with full schemas.
-
-            RAW EXTRACTED ENTITIES:
-            {raw_entities}
-
-            YOUR JOBS:
-            1. VALIDATE entity_type - move misclassified entities to correct category
-            - Remove characters/locations wrongly classified as "concepts"
-            - Remove characters wrongly classified as "objects"
-            - Concepts must be abstract ideas only (dragon-sickness, fate, honor)
-            
-            2. REMOVE exact duplicates (same entity listed multiple times)
-
-            3. ENRICH each entity with proper fields based on its type:
-
-            REQUIRED SCHEMAS BY TYPE:
-
-            CHARACTERS:
-            {characters_schema}
-
-            LOCATIONS:
-            {locations_schema}
-
-            RACES:
-            {races_schema}
-
-            OBJECTS:
-            {objects_schema}
-
-            EVENTS:
-            {events_schema}
-
-            GROUPS:
-            {groups_schema}
-
-            CONCEPTS:
-            {concepts_schema}
-
-            SONGS:
-            {songs_schema}
-
-            CRITICAL:
-            - Use EXACT field names from schemas (e.g., "name" not "character_name" or "location_name")
-            - Fill all required fields - use null or [] if unknown
-            - Maintain aliases from raw extraction
-
-            Return properly structured entities:
-            {{
-            "chapter_num": {chapter_num},
-            "chapter_title": "{chapter_title}",
-            "characters": [...],
-            "locations": [...],
-            "races": [...],
-            "objects": [...],
-            "events": [...],
-            "groups": [...],
-            "concepts": [...],
-            "songs": [...]
-            }}
+            Return ONLY valid JSON. No text before or after. No markdown blocks.
             """
 
     def __repr__(self):
