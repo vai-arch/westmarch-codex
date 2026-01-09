@@ -93,6 +93,9 @@ def prompt_builder(prompt: str, llm_config: dict) -> Dict[str, Any]:
         },
     }
 
+    if len(prompt) > llm_config.get("max_prompt_length", 15000):
+        print(f"⚠️  Warning: Prompt length ({len(prompt)}) exceeds max limit ({llm_config.get('max_prompt_length', 15000)})")
+
     try:
         response = requests.post(url, json=payload, timeout=llm_config["timeout"])
         response.raise_for_status()

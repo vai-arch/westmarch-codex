@@ -28,6 +28,8 @@ class Paths:
         self.FILE_BOOK_00_RAW = self.RAW_PATH / "The Hobbit.epub"
         self.FILE_BOOK_00_PROCESSED = self.DATA_PROCESSED_PATH / "book_00_processed.json"
         self.FILE_ENTITIES_RAW = self.DATA_PROCESSED_PATH / "entities_raw.json"
+        self.FILE_ENTITIES_DEDUPLICATED = self.DATA_PROCESSED_PATH / "entities_deduplicated.json"
+        self.FILE_BOOKS_CHUNKED = self.DATA_PROCESSED_PATH / "books_chunked.json"
 
         self.LOG_PATH = self.PROJECT_ROOT_PATH / "logs"
         self.LOG_STATISTICS_PATH = self.LOG_PATH / "statistics"

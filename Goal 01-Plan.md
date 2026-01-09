@@ -388,3 +388,23 @@ All entity data must support:
 - 🟡 In Progress
 - 🟢 Complete
 - ⚠️ Blocked/Issues
+
+LEARN ABOUT:
+
+FAISS vs Qdrant config
+
+Hybrid BM25 + E5 setup
+
+How to embed aliases properly
+
+If you also embed entity wiki pages
+
+Use same model but longer passages broken into:
+
+Character profile chunks
+
+Location profile chunks
+
+Event profile chunks
+
+Still 300–500 tokens each.

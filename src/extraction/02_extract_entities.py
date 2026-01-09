@@ -9,12 +9,10 @@ Output: data/processed/entities_raw.json
 Entity Types Extracted:
 - Characters (name, aliases, race, gender, role, affiliations, relationships, traits)
 - Locations (name, aliases, type, parent_location, inhabitants, significance)
-- Races (name, characteristics, notable_members)
 - Objects (name, aliases, type, owner, properties, significance)
 - Events (name, type, participants, location, chapter_refs, outcome)
 - Groups (name, type, members, purpose, allegiances)
 - Concepts (name, description, related_entities)
-- Songs (title, performer, context, chapter_reference)
 """
 
 # Import configuration
@@ -271,7 +269,7 @@ def update_accumulated_entities(accumulated: Dict[str, List[Dict[str, str]]], ne
 
 
 # =============================================================================
-# TWO-STAGE EXTRACTION
+# TWO-STAGE EXTRACTION APPROACH
 # =============================================================================
 
 
@@ -284,7 +282,6 @@ def stage1_unified_extraction(chapter_text: str, chapter_num: int, chapter_title
         List of entities with: entity_type, name, description, aliases
     """
 
-    ## TODO add some overlap between chunks and add accumulated entities from prior chunks
     # Split chapter into chunks
     chunks = []
     chunk_size = ENTITY_EXTRACTION_CONFIG.get("context_window_chars", 10000000)
@@ -341,12 +338,10 @@ def stage2_validate_and_structure(raw_entities: List[Dict[str, Any]], chapter_nu
     schemas = {
         "characters_schema": json.dumps(ENTITY_SCHEMAS["characters"]["format"], indent=2),
         "locations_schema": json.dumps(ENTITY_SCHEMAS["locations"]["format"], indent=2),
-        "races_schema": json.dumps(ENTITY_SCHEMAS["races"]["format"], indent=2),
         "objects_schema": json.dumps(ENTITY_SCHEMAS["objects"]["format"], indent=2),
         "events_schema": json.dumps(ENTITY_SCHEMAS["events"]["format"], indent=2),
         "groups_schema": json.dumps(ENTITY_SCHEMAS["groups"]["format"], indent=2),
         "concepts_schema": json.dumps(ENTITY_SCHEMAS["concepts"]["format"], indent=2),
-        "songs_schema": json.dumps(ENTITY_SCHEMAS["songs"]["format"], indent=2),
     }
 
     # Build prompt

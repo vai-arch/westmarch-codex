@@ -2,7 +2,14 @@
 Generic Westmarch Codex Configuration
 """
 
+from enum import Enum
+
 from dotenv import load_dotenv
+
+
+class EmbeddingManagers(str, Enum):
+    OLLAMA = "ollama"
+    SENTENCE_TRANSFORMER = "sentence_transformer"
 
 
 class Config:
@@ -30,7 +37,8 @@ class Config:
             "base_url": "http://localhost:11434",
             "temperature": 0.1,
             "max_tokens": 32768,
-            "timeout": 1800,
+            "max_prompt_length": 15000,
+            "timeout": 3000,
         }
 
         # Fast model for structured tasks (validation, formatting, simple extraction)
@@ -39,7 +47,8 @@ class Config:
             "base_url": "http://localhost:11434",
             "temperature": 0.1,
             "max_tokens": 32768,
-            "timeout": 900,  # Shorter timeout
+            "max_prompt_length": 15000,
+            "timeout": 3000,  # Shorter timeout
         }
 
         # Keep backward compatibility
@@ -52,7 +61,6 @@ class Config:
         self.ENTITY_TYPES = [
             "characters",
             "locations",
-            "races",
             "objects",
             "events",
             "groups",
@@ -62,7 +70,6 @@ class Config:
         self.ACCUMULATED_ENTITY_TYPES = [
             "characters",
             "locations",
-            "races",
             "objects",
             "groups",
             "concepts"
@@ -111,11 +118,6 @@ class Config:
                     "inhabitants": ["Bilbo Baggins"],
                     "significance": "Bilbo's comfortable home where the adventure begins",
                 },
-            },
-            "races": {
-                "description": "species or peoples mentioned in the story. It is ok if you just find the name mentioned without detailed characteristics.",
-                "format": {"name": "race name", "characteristics": ["traits mentioned or empty list"], "notable_members": ["key characters of this race or empty list"]},
-                "example": {"name": "Hobbits", "characteristics": ["small", "love comfort", "live in holes"], "notable_members": ["Bilbo Baggins"]},
             },
             "objects": {
                 "description": "ONLY physical inanimate items like weapons, rings, treasure, tools, clothing, books, maps, keys - absolutely NO people, NO creatures, NO places, NO events, NO conversations. If there are no physical items mentioned, return empty array.",
@@ -189,16 +191,6 @@ class Config:
                     "related_entities": ["Thorin Oakenshield", "Smaug", "dwarves"],
                 },
             },
-            "songs": {
-                "description": "songs, poems, or verses performed in the story",
-                "format": {"name": "song title or first line", "performer": "who sang it or null", "context": "why it was sung or null", "themes": ["main themes or empty list"]},
-                "example": {
-                    "name": "Far over the misty mountains cold",
-                    "performer": "the dwarves",
-                    "context": "sung at Bag End to inspire the quest",
-                    "themes": ["longing for home", "adventure", "treasure"],
-                },
-            },
         }
 
         self.UNIFIED_EXTRACTION_PROMPT = """You are an expert literary analyst extracting entities from "The Hobbit" by J.R.R. Tolkien.
@@ -211,8 +203,7 @@ class Config:
             3. object - physical items ONLY (swords, rings, treasure, maps, clothing, tools - NOT people or places)
             4. event - significant happenings (The Unexpected Party, battles, discoveries, meetings)
             5. group - organizations, companies (Thorin and Company, White Council, armies)
-            6. race - species/peoples (Hobbits, Dwarves, Elves, Dragons, Goblins)
-            7. concept - abstract ideas ONLY (dragon-sickness, fate, prophecy, honor - NOT people, places, or objects)
+            6. concept - abstract ideas ONLY (dragon-sickness, fate, prophecy, honor - NOT people, places, or objects)
 
             CRITICAL RULES:
             1. Extract EVERYTHING - major and minor entities
@@ -272,9 +263,6 @@ class Config:
             LOCATIONS:
             {locations_schema}
 
-            RACES:
-            {races_schema}
-
             OBJECTS:
             {objects_schema}
 
@@ -287,9 +275,6 @@ class Config:
             CONCEPTS:
             {concepts_schema}
 
-            SONGS:
-            {songs_schema}
-
             CRITICAL:
             - Use EXACT field names from schemas (e.g., "name" not "character_name" or "location_name")
             - Fill all required fields - use null or [] if unknown
@@ -301,14 +286,249 @@ class Config:
             "chapter_title": "{chapter_title}",
             "characters": [...],
             "locations": [...],
-            "races": [...],
             "objects": [...],
             "events": [...],
             "groups": [...],
             "concepts": [...],
-            "songs": [...]
             }}
             """
+
+        self.CHARACTER_STATS_PROMPT = """Analyze this chapter for mentions of the following character.
+
+            CHARACTER TO TRACK:
+            Name: {character_name}
+            Known aliases: {aliases}
+
+            CHAPTER TEXT:
+            {chapter_text}
+
+            TASK: Count occurrences for the specific character (search for character name AND all aliases):
+
+            1. MENTIONS: Total times the character is referenced by name or alias
+            2. DIALOGUES: Times the character speaks (has dialogue attributed to them)
+            3. ACTIONS: Times the character performs significant actions (verbs with character as subject)
+            4. JUSTIFICATION your counts briefly.
+            5. ALIASES not already listed that were found in the text.
+
+            CRITICAL: Never guess - only count what is explicitly in the text. Always justify your count. If the character doesnt appear, return zeros. Never count a different character. Only add new aliases, not already know ones.
+
+            Return ONLY this JSON (no explanation):
+            {{
+            "chapter_num": {chapter_num},
+            "mentions": <number>,
+            "dialogues": <number>,
+            "actions": <number>,
+            "justification": "brief explanation of counts",
+            "new_aliases": [list of any NEW aliases found]
+            }}
+            """
+
+        # === ENTITY DEDUPLICATION CONFIG ===
+        self.DEDUPLICATION_CONFIG = {
+            # Fuzzy matching threshold for name similarity (0-100, higher = stricter)
+            "fuzzy_threshold": 85,
+            # Similarity threshold for semantic comparison (0.0-1.0)
+            "semantic_threshold": 0.85,
+            # Strategy: "rule_based", "llm", or "hybrid"
+            "strategy": "rule_based",  # Start with rule_based, can upgrade to hybrid later
+            # For hybrid: how many candidates to send to LLM for final decision
+            "llm_review_threshold": 3,
+            # Enable within-chapter deduplication (for entities extracted multiple times in same chapter)
+            "within_chapter_dedup": True,
+            # Canonical name selection: "longest", "most_common", or "llm_choice"
+            "canonical_name_strategy": "longest",
+            # Batch size for LLM processing (if using LLM)
+            "llm_batch_size": 10,
+        }
+
+        # TODO: REMOVE THIS AFTER TESTING
+        self.DEDUPLICATION_CLEANUP_PROMPT = {
+            "characters": """Clean CHARACTERS from The Hobbit.
+
+        DECISION TEST for each entity - Apply in order:
+
+        TEST 1: Is this a SPECIES/RACE name (not an individual)?
+        Ask: "Can multiple beings share this name?" 
+        - YES → REMOVE (it's a race): "Goblins", "Wargs", "Wood-elves", "Hobbits" (plural/collective)
+        - NO → Keep (it's an individual): "Bilbo", "Gandalf", "Gollum"
+
+        TEST 2: Is this a DUPLICATE of another character?
+        Check: Do two names refer to the SAME individual person?
+        - "Bard" + "Bard the Bowman" → YES, same person → MERGE (keep longer name)
+        - "Dori" + "Nori" → NO, different people → Keep separate
+
+        TEST 3: Does it have a proper name?
+        - Has name → KEEP
+        - Generic descriptor only ("the Master") → Check if already captured elsewhere
+
+        MERGE RULES:
+        - Longer name becomes primary: "Bard the Bowman" (alias: "Bard")
+        - Combine all: aliases, source_chapters, relationships, traits
+
+        Current characters: {entities}
+        Return: {{"characters": [...]}}""",
+            "locations": """Clean LOCATIONS from The Hobbit.
+
+        DECISION TEST for each location - Apply in order:
+
+        TEST 1: CAPITALIZATION CHECK
+        - Starts with capital letter → Probably named → KEEP
+        - All lowercase → Probably generic → Go to TEST 2
+
+        TEST 2: PROPER NAME TEST (for lowercase entries)
+        Count how many of this type could exist:
+        - "river" → Could be 1000+ rivers → REMOVE
+        - "River Running" → One specific river → KEEP
+        - "tunnel" → Could be any tunnel → REMOVE  
+        - "secret passage" → One specific passage → Keep if appears 3+ chapters, else REMOVE
+
+        Rule: lowercase + appears in 1-2 chapters only → REMOVE
+
+        TEST 3: DUPLICATE CHECK
+        Exact matches or one name contains another:
+        - "Running River" vs "River Running" → Same? Check source_chapters overlap
+        - Merge if 80%+ chapter overlap
+
+        SPECIAL CASES:
+        - "The [Name]" variations: "The Hill" is a proper name → KEEP
+        - Compound locations: "king's cellars" = specific place → KEEP
+
+        Current locations: {entities}
+        Return: {{"locations": [...]}}""",
+            "objects": """Clean OBJECTS from The Hobbit.
+
+        DECISION TEST for each object - Apply in order:
+
+        TEST 1: BUNDLE DETECTION
+        Check aliases - are they SAME object or DIFFERENT objects?
+        Method: Could they exist simultaneously in different places?
+        - "ring" | aliases: ["precious", "birthday-present"] → SAME object (different names) → Keep together
+        - "Weapons" | aliases: ["Glamdring", "Orcrist", "Sting"] → DIFFERENT objects (3 swords) → SPLIT into 3
+
+        SPLIT RULE: If 3+ aliases that are clearly separate physical items → Create separate entities
+
+        TEST 2: DUPLICATE DETECTION  
+        Exact name match or longer name contains shorter:
+        - "Arkenstone" + "Arkenstone of Thrain" → Check aliases overlap
+        - If aliases match 50%+ → MERGE (keep longer name)
+
+        TEST 3: GENERIC REMOVAL
+        Is this a category name or specific named item?
+        - "sword" → generic category → REMOVE
+        - "Sting" → specific named sword → KEEP  
+        - "arrow" → generic → REMOVE
+        - "black arrow" → specific important arrow → KEEP
+
+        Test: Would Tolkien use a capital letter for this in prose?
+        - No capital → likely generic → REMOVE
+
+        Current objects: {entities}
+        Return: {{"objects": [...]}}""",
+            "events": """Clean EVENTS from The Hobbit.
+
+        DECISION TEST for each event:
+
+        TEST 1: DUPLICATE EVENT CHECK
+        Compare events pairwise:
+        - Same participants? (50%+ overlap)
+        - Same location?
+        - Same chapter range? (overlap 2+ chapters)
+
+        If YES to all 3 → Same event, different description → MERGE
+        Example: "Death of Smaug" + "Fall of Smaug" → MERGE (choose more descriptive)
+
+        TEST 2: VAGUE vs SPECIFIC
+        Events need clear identity. Must have 2+ of:
+        - Specific participants (not "they")
+        - Specific location  
+        - Specific outcome
+        - Appears in 2+ chapters
+
+        If too vague → REMOVE
+
+        MERGE RULE: Keep most descriptive/complete name
+
+        Current events: {entities}
+        Return: {{"events": [...]}}""",
+            "groups": """Clean GROUPS from The Hobbit.
+
+        DECISION TEST:
+
+        TEST 1: DUPLICATE CHECK
+        Are these the same group?
+        - "elves" vs "Elves" → Same group, different capitalization → MERGE (capitalize)
+        - "Lake-men" variants → Merge under most common form
+
+        TEST 2: PROPER GROUP NAME
+        - Has specific name/identifier → KEEP
+        - Too generic ("people", "folk") → REMOVE
+
+        Current groups: {entities}
+        Return: {{"groups": [...]}}""",
+            "concepts": """Clean CONCEPTS from The Hobbit.
+
+        DECISION TEST:
+
+        TEST 1: PHILOSOPHICAL vs CONCRETE
+        Concepts should be ABSTRACT ideas, not physical things
+        - "dragon-sickness" → abstract affliction → KEEP
+        - "treasure" → physical thing → REMOVE (unless clearly abstract greed concept)
+
+        TEST 2: DUPLICATE CHECK  
+        - "dragon-sickness" vs "Dragon-sickness" → MERGE (consistent capitalization)
+
+        Current concepts: {entities}
+        Return: {{"concepts": [...]}}""",
+        }
+
+        # TODO: REMOVE THIS AFTER TESTING
+        # Models for LLM deduplication (if strategy includes LLM)
+        self.DEDUPLICATION_LLM_CONFIG = self.REASONING_MODEL_CONFIG  # Reuse reasoning model
+
+        self.EMBEDDING_MODEL_NOMIC_2048 = {
+            "EMBEDDING_MODEL_NAME": "nomic-embed-text-num_batch-2048:latest",
+            "EMBEDDING_MODEL_MAX_TOKENS": 2046,
+            "EMBEDDING_MODEL_DIMENSION": 768,
+            "EMBEDDING_MODEL_RAW_PREFIX": None,
+            "EMBEDDING_MODEL_SEARCH_PREFIX": "search_query",
+            "EMBEDDING_MODEL_DOCUMENT_PREFIX": "search_document",
+        }
+
+        self.EMBEDDING_MODEL_NOMIC_1_5 = {
+            "EMBEDDING_MODEL_NAME": "nomic-ai/nomic-embed-text-v1.5",
+            "EMBEDDING_MODEL_MAX_TOKENS": 8000,
+            "EMBEDDING_MODEL_DIMENSION": 768,
+            "EMBEDDING_MODEL_RAW_PREFIX": None,
+            "EMBEDDING_MODEL_SEARCH_PREFIX": "",
+            "EMBEDDING_MODEL_DOCUMENT_PREFIX": "",
+        }
+
+        self.EMBEDDING_MODEL_INTFLOAT_E5_LARGE_V2 = {
+            "EMBEDDING_MODEL_NAME": "intfloat/e5-large-v2",
+            "EMBEDDING_MODEL_MAX_TOKENS": 512,
+            "EMBEDDING_MODEL_DIMENSION": 1024,
+            "EMBEDDING_MODEL_RAW_PREFIX": "passage: ",
+            "EMBEDDING_MODEL_SEARCH_PREFIX": "query: ",
+            "EMBEDDING_MODEL_DOCUMENT_PREFIX": "passage: ",
+        }
+
+        self.EMBEDDING_MODEL = self.EMBEDDING_MODEL_INTFLOAT_E5_LARGE_V2
+        self.EMBEDDING_MANAGER = EmbeddingManagers.SENTENCE_TRANSFORMER.value
+
+        self.EMBEDDING_SENTENCE_TRANSFORMER_CONFIG = {
+            "EMBEDDING_METHOD": "BATCH",  # ONE_BY_ONE, BATCH, BATCH_IN_PARALLEL
+            "EMBEDDING_BATCH_SIZE": 32,
+            "EMBEDDING_MODEL": self.EMBEDDING_MODEL,
+        }
+
+        self.CHUNKING_STRATEGY = {
+            "BOOKS_CHUNKING_STRATEGY_NAME": "semantic",
+            "SEMANTIC_MAX_CHUNK_TOKENS": 1000,
+            "SEMANTIC_MIN_CHUNK_TOKENS": 300,
+            "SEMANTIC_OVERLAP_TOKENS": 0,
+            "SEMANTIC_SIMILARITY_THRESHOLD": 0.82,  # cosine similarity breakpoint
+            "MIN_BOOKS_CHUNKS_SIZE_CHARACTERS": 300,
+        }
 
     def __repr__(self):
         """String representation showing all config attributes"""
@@ -333,6 +553,17 @@ def print_config():
     config = get_config()
 
     print(config.__repr__)
+
+
+def get_embedding_manager_config(embedding_manager: str):
+    config = get_config()
+
+    if embedding_manager == EmbeddingManagers.OLLAMA.value:
+        return config.OLLAMA_CONFIG
+    elif embedding_manager == EmbeddingManagers.SENTENCE_TRANSFORMER.value:
+        return config.EMBEDDING_SENTENCE_TRANSFORMER_CONFIG
+    else:
+        raise ValueError(f"Unknown embedding backend: {embedding_manager}")
 
 
 def configuration_to_string(configuration_section: dict, indent: int = 0) -> str:
