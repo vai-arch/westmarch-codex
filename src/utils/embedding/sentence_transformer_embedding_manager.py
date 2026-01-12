@@ -16,14 +16,14 @@ class SentenceTransformerEmbeddingManager(BaseEmbeddingManager):
         self.method = config["EMBEDDING_METHOD"]
         self.batch_size = config["EMBEDDING_BATCH_SIZE"]
 
-        self.model_name = config["EMBEDDING_MODEL"]["EMBEDDING_MODEL_NAME"]
-        self.embedding_model_dimension = config["EMBEDDING_MODEL"]["EMBEDDING_MODEL_DIMENSION"]
-        self.embedding_model_max_tokens = config["EMBEDDING_MODEL"]["EMBEDDING_MODEL_MAX_TOKENS"]
+        self.model_name = config["EMBEDDING_MODEL_CONFIG"]["EMBEDDING_MODEL_NAME"]
+        self.embedding_model_dimension = config["EMBEDDING_MODEL_CONFIG"]["EMBEDDING_MODEL_DIMENSION"]
+        self.embedding_model_max_tokens = config["EMBEDDING_MODEL_CONFIG"]["EMBEDDING_MODEL_MAX_TOKENS"]
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = SentenceTransformer(self.model_name, device=self.device, trust_remote_code=True)
 
-        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
 
         print("✅ SentenceTransformer loaded")
         print(f"   Model: {self.model_name}")
@@ -53,29 +53,33 @@ class SentenceTransformerEmbeddingManager(BaseEmbeddingManager):
         self,
         texts: List[str],
         show_progress: bool = True,
-        prefix=None,  # intentionally ignored (kept for interface parity)
+        chunk_type=None,  # intentionally ignored (kept for interface parity)
     ) -> Tuple[List[List[float]], float, int, float]:
         dispatch = {
             "ONE_BY_ONE": self.embed_one_by_one,
             "BATCH": self.embed_batch,
         }
 
+        prefix = ""
+
+        if chunk_type:
+            prefix_key = f"EMBEDDING_MODEL_{chunk_type.upper()}_PREFIX"
+            prefix = self.config["EMBEDDING_MODEL_CONFIG"].get(prefix_key, "")
+        else:
+            prefix = ""
+
         try:
             embed_fn = dispatch[self.method]
         except KeyError:
             raise ValueError(f"Unknown embedding method: {self.method}")
 
-        return embed_fn(texts, show_progress)
+        return embed_fn(texts, show_progress, prefix)
 
     # ---------------------------------------------------------
     # ONE BY ONE
     # ---------------------------------------------------------
 
-    def embed_one_by_one(
-        self,
-        texts: List[str],
-        show_progress: bool = True,
-    ) -> Tuple[List[List[float]], float, int, float]:
+    def embed_one_by_one(self, texts: List[str], show_progress: bool = True, prefix: str = "") -> Tuple[List[List[float]], float, int, float]:
         start_time = datetime.now()
 
         embeddings = []
@@ -91,7 +95,7 @@ class SentenceTransformerEmbeddingManager(BaseEmbeddingManager):
                 raise ValueError(f"Maximum number of tokens ({self.embedding_model_max_tokens}) reached. Rechunk input text.")
 
             emb = self.model.encode(
-                text,
+                f"{prefix}{text}",
                 normalize_embeddings=True,
                 convert_to_numpy=True,
                 show_progress_bar=False,
@@ -115,11 +119,7 @@ class SentenceTransformerEmbeddingManager(BaseEmbeddingManager):
     # BATCH MODE
     # ---------------------------------------------------------
 
-    def embed_batch(
-        self,
-        texts: List[str],
-        show_progress: bool = True,
-    ) -> Tuple[List[List[float]], float, int, float]:
+    def embed_batch(self, texts: List[str], show_progress: bool = True, prefix: str = "") -> Tuple[List[List[float]], float, int, float]:
         start_time = datetime.now()
 
         all_embeddings = []
@@ -144,7 +144,9 @@ class SentenceTransformerEmbeddingManager(BaseEmbeddingManager):
                 elif t.strip() == "":
                     print(f"⚠️ Empty string chunk at batch {i}, position {j}")
 
-            # token_counts = [len(self.model.tokenize(t)["input_ids"]) for t in batch_texts]
+            if prefix:
+                batch_texts = [f"{prefix} {t}" for t in batch_texts]
+
             token_counts = [len(self.tokenizer(t, truncation=False)["input_ids"]) for t in batch_texts]
             for text, count in zip(batch_texts, token_counts):
                 if count >= self.embedding_model_max_tokens:
@@ -169,3 +171,37 @@ class SentenceTransformerEmbeddingManager(BaseEmbeddingManager):
         total_time = datetime.now() - start_time
 
         return all_embeddings, avg_tokens, max_tokens, total_time
+
+    def tokenize_text(self, text: str) -> List[int]:
+        return self.tokenizer.encode(text, truncation=False)
+
+    def token_count(self, text: str) -> int:
+        return len(self.tokenize_text(text))
+
+
+if __name__ == "__main__":
+    # main()
+    EMBEDDING_SENTENCE_TRANSFORMER_CONFIG = {
+        "EMBEDDING_METHOD": "BATCH",  # ONE_BY_ONE, BATCH, BATCH_IN_PARALLEL
+        "EMBEDDING_BATCH_SIZE": 32,
+        "EMBEDDING_MODEL_CONFIG": {
+            "EMBEDDING_MODEL_NAME": "intfloat/e5-large-v2",
+            "EMBEDDING_MODEL_MAX_TOKENS": 512,
+            "EMBEDDING_MODEL_DIMENSION": 1024,
+            "EMBEDDING_MODEL_RAW_PREFIX": "passage: ",
+            "EMBEDDING_MODEL_SEARCH_PREFIX": "query: ",
+            "EMBEDDING_MODEL_DOCUMENT_PREFIX": "passage: ",
+        },
+    }
+
+    emb = SentenceTransformerEmbeddingManager(EMBEDDING_SENTENCE_TRANSFORMER_CONFIG)
+
+    text = "In a hole in the ground there lived a hobbit."
+
+    # Token count (real tokenizer, not word count)
+    print("Tokens:", emb.tokenize_text(text))
+    print("Token count:", emb.token_count(text))
+
+    # Generate embedding
+    vec = emb.embed_chunks([text], show_progress=False)
+    print("Embedding:", vec)

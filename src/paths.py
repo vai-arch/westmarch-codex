@@ -24,17 +24,19 @@ class Paths:
         self.RAW_PATH = self.PROJECT_ROOT_PATH / "raw"
         self.DATA_PATH = self.PROJECT_ROOT_PATH / "data"
         self.DATA_PROCESSED_PATH = self.DATA_PATH / "processed"
+        self.DATA_TEMP_PATH = self.DATA_PATH / "temp"
 
         self.FILE_BOOK_00_RAW = self.RAW_PATH / "The Hobbit.epub"
         self.FILE_BOOK_00_PROCESSED = self.DATA_PROCESSED_PATH / "book_00_processed.json"
         self.FILE_ENTITIES_RAW = self.DATA_PROCESSED_PATH / "entities_raw.json"
         self.FILE_ENTITIES_DEDUPLICATED = self.DATA_PROCESSED_PATH / "entities_deduplicated.json"
-        self.FILE_BOOKS_CHUNKED = self.DATA_PROCESSED_PATH / "books_chunked.json"
+        self.FILE_BOOKS_CHUNKED = self.DATA_PROCESSED_PATH / "books_chunked.jsonl"
+        self.FILE_SCENE_CHUNKS = self.DATA_PROCESSED_PATH / "scene_chunks.jsonl"
+        self.FILE_LLM_SCENE_CHUNKS = self.DATA_PROCESSED_PATH / "llm_scene_chunks.jsonl"
 
         self.LOG_PATH = self.PROJECT_ROOT_PATH / "logs"
         self.LOG_STATISTICS_PATH = self.LOG_PATH / "statistics"
         self.FILE_MAIN_LOG = self.LOG_PATH / "westmarch_codex.log"
-
         # Create all directories
         self._create_directories()
 

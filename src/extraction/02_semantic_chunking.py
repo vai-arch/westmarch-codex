@@ -22,12 +22,13 @@ from typing import Any, Dict, List
 from src.config import get_config
 from src.paths import get_paths
 from src.utils.chunking.chunking_strategies import semantic_chunker_function
+from src.utils.embedding.embedding_factory import create_embedding_manager
 from src.utils.util_files_functions import load_json_from_file, save_jsonl_to_file
 from src.utils.util_statistics import total_statistics_logging
 
 FILE_BOOKS_CHUNKED = None
 CHUNKING_STRATEGY = None
-checkpoint_manager = None
+embedding_manager = None
 
 
 def chunk_book_chapter(chapter: Dict, book_number: int, book_title: str, config: Dict) -> List[Dict]:
@@ -50,49 +51,47 @@ def chunk_book_chapter(chapter: Dict, book_number: int, book_title: str, config:
     print(f"Chapter: {chapter_num}, Chapter length: {len(chapter_text)} characters")
 
     # Semantic chunking (current strategy)
-    raw_chunks = semantic_chunker_function(
-        text=chapter_text,
-        target_tokens=CHUNKING_STRATEGY["SEMANTIC_MAX_CHUNK_TOKENS"],  # ← maps old max to new target
-        min_tokens=CHUNKING_STRATEGY["SEMANTIC_MIN_CHUNK_TOKENS"],  # ← optional: sensible default (e.g., 500 if max=1000)
-        overlap_tokens=CHUNKING_STRATEGY["SEMANTIC_OVERLAP_TOKENS"],
-        similarity_bonus_threshold=CHUNKING_STRATEGY["SEMANTIC_SIMILARITY_THRESHOLD"],  # ← rename intent
-    )
+    raw_chunks = semantic_chunker_function(text=chapter_text, chunking_strategy_config=CHUNKING_STRATEGY)
 
-    # === TINY CHUNK CLEANUP & METADATA ASSIGNMENT ===
+    # === PASS 1: Merge tiny chunks based on tokens only ===
+    min_tokens = CHUNKING_STRATEGY["MIN_BOOKS_CHUNKS_SIZE_TOKENS"]
+
+    merged_chunks: list[str] = []
+
+    for chunk_text in raw_chunks:
+        tokens = embedding_manager.token_count(chunk_text)
+
+        # Merge tiny chunk into previous one
+        if tokens < min_tokens and merged_chunks:
+            merged_chunks[-1] = merged_chunks[-1].rstrip() + " " + chunk_text.lstrip()
+        else:
+            merged_chunks.append(chunk_text)
+
+    # === PASS 2: Add full metadata ===
     filtered_chunks = []
-    for idx, chunk_text in enumerate(raw_chunks):
-        # Temporary chunk object (index will be recalculated)
-        temp_chunk = {
+    total_chunks = len(merged_chunks)
+
+    for idx, chunk_text in enumerate(merged_chunks):
+        token_count = embedding_manager.token_count(chunk_text)
+        chunk = {
             "source": "book",
-            "chunk_id": f"book_{book_number:02d}_ch_{chapter_num:02d}_chunk_{idx + 1:03d}",  # temporary ID
             "book_number": book_number,
             "book_title": book_title,
             "chapter_number": chapter_num,
             "chapter_title": chapter_title,
             "chapter_type": chapter_type,
             "text": chunk_text,
+            "token_count": token_count,
             "temporal_order": book_number,
+            "chunk_index": idx + 1,
+            "total_chunks_in_chapter": total_chunks,
+            "chunk_id": f"book_{book_number:02d}_ch_{chapter_num:02d}_chunk_{idx + 1:03d}",
         }
 
-        # Merge tiny chunks (< 300 chars) into previous chunk
-        if len(chunk_text) < config.get("MIN_BOOKS_CHUNKS_SIZE_CHARACTERS", 300):
-            if filtered_chunks:  # Merge into last chunk if exists
-                filtered_chunks[-1]["text"] += " " + chunk_text
-            # else: very rare leading tiny chunk → keep as-is (unlikely with semantic chunker)
-        else:
-            filtered_chunks.append(temp_chunk)
+        filtered_chunks.append(chunk)
 
-    # If the very last raw chunk was tiny and merged, it's already handled above
-
-    # === Recalculate final indices and IDs ===
-    final_total = len(filtered_chunks)
-    for final_idx, chunk in enumerate(filtered_chunks):
-        # Update human-readable fields
-        chunk["chunk_index"] = final_idx + 1
-        chunk["total_chunks_in_chapter"] = final_total
-        # Regenerate clean chunk_id with correct index
-        chunk["chunk_id"] = f"book_{book_number:02d}_ch_{chapter_num:02d}_chunk_{final_idx + 1:03d}"
-        print(f"LEN: {len(chunk['text'])} chars → {chunk['chunk_id']}")
+        # Debug
+        print(f"{chunk['chunk_id']} → {token_count} tokens, {len(chunk_text)} chars")
 
     return filtered_chunks
 
@@ -115,31 +114,41 @@ def generate_statistics(chapter_chunks: List[Dict]) -> Dict[str, Any]:
     for ch_num in sorted(chapters_dict.keys()):
         chunks = chapters_dict[ch_num]
         chunk_sizes = [len(chunk["text"]) for chunk in chunks]
+        token_count = [chunk["token_count"] for chunk in chunks]
 
         per_chapter_stats.append(
             {
                 "name": f"Chapter {ch_num}",
                 "metrics": {
                     "num_chunks": len(chunks),
-                    "avg_chunk_size": sum(chunk_sizes) / len(chunk_sizes) if chunk_sizes else 0,
+                    "avg_chunk_size": int(sum(chunk_sizes) / len(chunk_sizes)) if chunk_sizes else 0,
                     "min_chunk_size": min(chunk_sizes) if chunk_sizes else 0,
                     "max_chunk_size": max(chunk_sizes) if chunk_sizes else 0,
                     "total_characters": sum(chunk_sizes),
+                    "avg_chunk_size_tokens": int(sum(token_count) / len(chunk_sizes)) if chunk_sizes else 0,
+                    "min_chunk_size_tokens": min(token_count) if token_count else 0,
+                    "max_chunk_size_tokens": max(token_count) if token_count else 0,
+                    "total_tokens": sum(token_count),
                 },
             }
         )
 
     # Calculate total statistics
     all_chunk_sizes = [len(chunk["text"]) for chunk in chapter_chunks]
+    all_token_count = [chunk["token_count"] for chunk in chapter_chunks]
     per_chapter_stats.append(
         {
             "name": "TOTAL",
             "metrics": {
                 "num_chunks": len(chapter_chunks),
-                "avg_chunk_size": sum(all_chunk_sizes) / len(all_chunk_sizes) if all_chunk_sizes else 0,
+                "avg_chunk_size": int(sum(all_chunk_sizes) / len(all_chunk_sizes)) if all_chunk_sizes else 0,
                 "min_chunk_size": min(all_chunk_sizes) if all_chunk_sizes else 0,
                 "max_chunk_size": max(all_chunk_sizes) if all_chunk_sizes else 0,
                 "total_characters": sum(all_chunk_sizes),
+                "avg_chunk_size_tokens": int(sum(all_token_count) / len(all_chunk_sizes)) if all_chunk_sizes else 0,
+                "min_chunk_size_tokens": min(all_token_count) if all_token_count else 0,
+                "max_chunk_size_tokens": max(all_token_count) if all_token_count else 0,
+                "total_tokens": sum(all_token_count),
             },
         }
     )
@@ -152,10 +161,12 @@ def main():
 
     config = get_config()
     paths = get_paths()
-    global checkpoint_manager, FILE_BOOKS_CHUNKED, CHUNKING_STRATEGY
+    global FILE_BOOKS_CHUNKED, CHUNKING_STRATEGY, embedding_manager
 
     FILE_BOOKS_CHUNKED = paths.FILE_BOOKS_CHUNKED
     CHUNKING_STRATEGY = config.CHUNKING_STRATEGY
+
+    embedding_manager = create_embedding_manager(CHUNKING_STRATEGY["EMBEDDING_MANAGER_CONFIG"])
 
     chapters = load_json_from_file(paths.FILE_BOOK_00_PROCESSED)
 

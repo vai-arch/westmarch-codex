@@ -1,7 +1,12 @@
 import json
+import re
+from datetime import datetime
 from typing import Any, Dict
 
 import requests
+
+from src.paths import get_paths
+from src.utils.util_files_functions import save_text_to_file
 
 
 def testing_connection(LLM_CONFIG):
@@ -15,54 +20,29 @@ def testing_connection(LLM_CONFIG):
         raise ConnectionError(f"Cannot connect to Ollama: {e}")
 
 
-def fix_broken_json(broken_json: str, error_message: str, llm_config: dict) -> str:
+def fix_json_almost(json_text: str) -> str:
     """
-    Ask LLM to fix broken JSON.
-
-    Args:
-        broken_json: The malformed JSON string
-        error_message: The error message from json.loads()
-        llm_config: LLM configuration
-
-    Returns:
-        Fixed JSON string (not parsed)
+    Fixes JSON that:
+      - Has single-line comments // ...
+      - Is missing commas between key-value pairs
+      - Can be a list of objects
+    Returns a Python list of dicts.
     """
-    fix_prompt = f"""The following JSON has a syntax error. Fix it and return ONLY the corrected JSON.
-
-ERROR: {error_message}
-
-BROKEN JSON:
-{broken_json}
-
-Return ONLY the fixed JSON. No explanation. Start with {{ and end with }}.
-"""
-
-    url = f"{llm_config['base_url']}/api/generate"
-
-    payload = {
-        "model": llm_config["model"],
-        "prompt": fix_prompt,
-        "stream": False,
-        "options": {
-            "temperature": 0.0,  # Deterministic for fixing
-            "num_predict": llm_config["max_tokens"],
-        },
-    }
-
-    response = requests.post(url, json=payload, timeout=llm_config["timeout"])
-    response.raise_for_status()
-
-    result = response.json()
-    response_text = result.get("response", "")
-
     # Clean response
-    response_text = response_text.strip()
+    response_text = json_text.strip()
     if "{" in response_text:
         response_text = response_text[response_text.find("{") :]
     if "}" in response_text:
         response_text = response_text[: response_text.rfind("}") + 1]
 
-    return response_text
+    # 1️⃣ Remove single-line comments
+    no_comments = re.sub(r"//.*", "", response_text)
+
+    # 2️⃣ Add missing commas between quoted key-value pairs
+    # Pattern: "value""key":  ->  "value", "key":
+    fixed_commas = re.sub(r'(".*?")\s*(".*?")\s*:', r"\1, \2:", no_comments)
+
+    return fixed_commas
 
 
 def prompt_builder(prompt: str, llm_config: dict) -> Dict[str, Any]:
@@ -103,33 +83,19 @@ def prompt_builder(prompt: str, llm_config: dict) -> Dict[str, Any]:
         result = response.json()
         response_text = result.get("response", "")
 
-        # Clean response
-        response_text = response_text.strip()
-        if "{" in response_text:
-            response_text = response_text[response_text.find("{") :]
-        if "}" in response_text:
-            response_text = response_text[: response_text.rfind("}") + 1]
-
         # Try to parse JSON
         try:
-            parsed = json.loads(response_text)
+            clean_text = fix_json_almost(response_text)
+            parsed = json.loads(clean_text)
             return parsed
 
         except json.JSONDecodeError as e:
-            # First parse failed - try to fix
-            print(f"⚠️  JSON error: {e}, attempting fix...")
-
-            try:
-                fixed_text = fix_broken_json(response_text, str(e), llm_config)
-                parsed = json.loads(fixed_text)
-                print("✓ JSON fixed successfully")
-                return parsed
-
-            except Exception as fix_error:
-                # Fix failed - re-raise original error
-                print(f"✗ Fix failed: {fix_error}")
-                print(f"Original response (first 500 chars): {response_text[:500]}")
-                raise e
+            print(f"⚠️  JSON error: {e},")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            paths = get_paths()
+            output_file = paths.DATA_TEMP_PATH / f"{paths.FILE_ENTITIES_RAW.stem}_{timestamp}.txt"
+            save_text_to_file(data=response_text, output_file=output_file)
+            raise e
 
     except requests.exceptions.RequestException as e:
         print(f"❌ API Error: {e}")

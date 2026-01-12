@@ -20,7 +20,7 @@ from fuzzywuzzy import fuzz
 from src.config import get_config
 from src.paths import get_paths
 from src.utils.llm_access.ollama_llm import prompt_builder
-from src.utils.util_files_functions import load_json_from_file, save_json_to_file
+from src.utils.util_files_functions import load_json_from_file, load_jsonl_from_file, save_json_to_file
 from src.utils.util_statistics import total_statistics_logging
 
 # Global configs
@@ -31,6 +31,8 @@ REASONING_MODEL_CONFIG = None
 FAST_MODEL_CONFIG = None
 CHARACTER_STATS_PROMPT = None
 ENTITY_TYPES = None
+ENTITY_EXTRACTION_CONFIG = None
+FILE_BOOKS_CHUNKED = None
 
 
 def deduplicate_within_chapter(chapter_entities: List[Dict]) -> List[Dict]:
@@ -500,23 +502,31 @@ def enhance_all_characters(characters: List[Dict[str, Any]], chapters: List[Dict
             chapter_text = "\n\n".join(chapter["paragraphs"])
             chapter_num = chapter["chapter_num"]
 
-            # Split chapter into chunks
-            chunks = []
-            for i in range(0, len(chapter_text), chunk_size):
-                chunk = chapter_text[i : i + chunk_size]
-                # Check if character or any alias appears in chunk (whole words/phrases)
+            # Check config for chunking strategy
+            use_semantic_chunks = ENTITY_EXTRACTION_CONFIG.get("use_semantic_chunks", False)
+
+            if use_semantic_chunks:
+                # Load semantic chunks for this chapter
+                all_chunks = load_jsonl_from_file(FILE_BOOKS_CHUNKED)
+                chapter_chunks = [c for c in all_chunks if c["chapter_number"] == chapter_num]
+                chunks = [c["text"] for c in chapter_chunks]
+            else:
+                # Legacy: character-based splitting
+                chunks = []
+                for i in range(0, len(chapter_text), chunk_size):
+                    chunks.append(chapter_text[i : i + chunk_size])
+
+            # Rest stays the same - check if character appears in chunks
+            for chunk in chunks:
                 found = False
                 for term in search_terms:
                     if not term:
                         continue
-                    # Use regex word boundary for single words, simple contains for phrases
                     if " " in term:
-                        # Multi-word phrase - use simple case-insensitive search
                         if term.lower() in chunk.lower():
                             found = True
                             break
                     else:
-                        # Single word - use word boundaries
                         if re.search(r"\b" + re.escape(term) + r"\b", chunk, re.IGNORECASE):
                             found = True
                             break
@@ -599,12 +609,23 @@ def main():
     config = get_config()
     paths = get_paths()
 
-    global DEDUPLICATION_CONFIG, DEDUPLICATION_LLM_CONFIG, ENTITY_TYPES, DEDUPLICATION_CLEANUP_PROMPT, REASONING_MODEL_CONFIG, FAST_MODEL_CONFIG, CHARACTER_STATS_PROMPT
+    global \
+        DEDUPLICATION_CONFIG, \
+        DEDUPLICATION_LLM_CONFIG, \
+        ENTITY_TYPES, \
+        DEDUPLICATION_CLEANUP_PROMPT, \
+        REASONING_MODEL_CONFIG, \
+        FAST_MODEL_CONFIG, \
+        CHARACTER_STATS_PROMPT, \
+        FILE_BOOKS_CHUNKED, \
+        ENTITY_EXTRACTION_CONFIG
     DEDUPLICATION_CONFIG = config.DEDUPLICATION_CONFIG
     DEDUPLICATION_LLM_CONFIG = config.DEDUPLICATION_LLM_CONFIG
     DEDUPLICATION_CLEANUP_PROMPT = config.DEDUPLICATION_CLEANUP_PROMPT
     REASONING_MODEL_CONFIG = config.REASONING_MODEL_CONFIG
     FAST_MODEL_CONFIG = config.FAST_MODEL_CONFIG
+    ENTITY_EXTRACTION_CONFIG = config.ENTITY_EXTRACTION_CONFIG
+    FILE_BOOKS_CHUNKED = paths.FILE_BOOKS_CHUNKED
     ENTITY_TYPES = config.ENTITY_TYPES
     CHARACTER_STATS_PROMPT = config.CHARACTER_STATS_PROMPT
 

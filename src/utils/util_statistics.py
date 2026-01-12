@@ -67,7 +67,10 @@ def format_metric(key, value):
 
     # --- AVERAGE METRICS ---
     if key_str.startswith("avg_"):
-        return f"{value:.3f}"
+        try:
+            return f"{float(value):.3f}"
+        except (TypeError, ValueError):
+            return str(value)  # fallback safely
 
     # --- TOKEN METRICS ---
     if key_str.endswith("_tokens") or key_str.startswith("max_"):

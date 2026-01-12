@@ -171,7 +171,7 @@ def copy_files(
     return True
 
 
-def load_json_line_by_line(file, log=True):
+def load_jsonl_from_file(file, log=True):
     """
     Load a file line by line as JSON objects.
 
@@ -299,3 +299,16 @@ def save_json_to_file(data: List[Dict], output_file, indent: int = None, log=Tru
 
     if log:
         logger.info(f"\n💾 Saved {len(data)} json elements to: {output_file}")
+
+
+def save_text_to_file(data: str, output_file, log=True):
+    if log:
+        logger.debug(f"\n💾 Saving {len(data)} chars to: {output_file}")
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(data)
+
+    if log:
+        logger.info(f"\n💾 Saved {len(data)} chars to: {output_file}")

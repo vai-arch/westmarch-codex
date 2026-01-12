@@ -18,16 +18,18 @@ Entity Types Extracted:
 # Import configuration
 import json
 import time
-from typing import Any, Dict, List
+from collections import defaultdict
+from difflib import SequenceMatcher
+from typing import Any, Counter, Dict, List
 
 from src.config import get_config
 from src.paths import get_paths
 from src.utils.llm_access.ollama_llm import prompt_builder, testing_connection
-from src.utils.util_files_functions import load_json_from_file, save_json_to_file
+from src.utils.util_files_functions import load_json_from_file, load_jsonl_from_file, save_json_to_file
 from src.utils.util_statistics import total_statistics_logging
 
-REASONING_MODEL_CONFIG = None
-FAST_MODEL_CONFIG = None
+STAGE_1_LLM_CONFIG = None
+STAGE_3_LLM_CONFIG = None
 ENTITY_TYPES = None
 ENTITY_EXTRACTION_CONFIG = None
 ACCUMULATED_ENTITY_TYPES = None
@@ -36,6 +38,8 @@ UNIFIED_EXTRACTION_PROMPT = None
 VALIDATION_PROMPT = None
 FILE_ENTITIES_RAW = None
 ENTITY_EXTRACTION = None
+DATA_TEMP_PATH = None
+FILE_BOOKS_CHUNKED = None
 checkpoint_manager = None
 
 
@@ -282,16 +286,19 @@ def stage1_unified_extraction(chapter_text: str, chapter_num: int, chapter_title
         List of entities with: entity_type, name, description, aliases
     """
 
-    # Split chapter into chunks
-    chunks = []
-    chunk_size = ENTITY_EXTRACTION_CONFIG.get("context_window_chars", 10000000)
+    # Check config for chunking strategy
+    use_semantic_chunks = ENTITY_EXTRACTION_CONFIG.get("use_semantic_chunks", True)
 
-    for i in range(0, len(chapter_text), chunk_size):
-        chunks.append(chapter_text[i : i + chunk_size])
-
-    # If single chunk, process normally
-    if len(chunks) == 1:
-        chunks = [chapter_text]
+    if use_semantic_chunks:
+        # Load semantic chunks for this chapter
+        all_chunks = load_jsonl_from_file(FILE_BOOKS_CHUNKED)
+        chapter_chunks = [c for c in all_chunks if c["chapter_number"] == chapter_num]
+        chunks = [c["text"] for c in chapter_chunks]
+        print(f"Using {len(chunks)} semantic chunks")
+    else:
+        # Legacy: character-based splitting
+        chunk_size = ENTITY_EXTRACTION_CONFIG.get("context_window_chars", 10000)
+        chunks = [chapter_text[i : i + chunk_size] for i in range(0, len(chapter_text), chunk_size)]
 
     # Build context once (shared across chunks)
     context_section = build_context_section(accumulated_entities)
@@ -306,7 +313,7 @@ def stage1_unified_extraction(chapter_text: str, chapter_num: int, chapter_title
 
         for attempt in range(max_retries + 1):
             try:
-                result = prompt_builder(prompt, REASONING_MODEL_CONFIG)
+                result = prompt_builder(prompt, STAGE_1_LLM_CONFIG)
                 entities = result.get("entities", [])
                 all_entities.extend(entities)
                 break
@@ -322,7 +329,46 @@ def stage1_unified_extraction(chapter_text: str, chapter_num: int, chapter_title
     return all_entities
 
 
-def stage2_validate_and_structure(raw_entities: List[Dict[str, Any]], chapter_num: int, chapter_title: str, max_retries: int = 2) -> Dict[str, List[Dict[str, Any]]]:
+def similar(a, b, threshold=0.85):
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio() >= threshold
+
+
+def merge_dicts(*dicts):
+    merged = defaultdict(list)
+    for d in dicts:
+        if not d:
+            continue
+        for k, v in d.items():
+            merged[k].extend(v)
+    return dict(merged)
+
+
+def stage2_merge_entities(entities):
+    merged = {}
+
+    for e in entities:
+        key = (e["entity_type"], e["name"])  # STRICT match
+
+        if key not in merged:
+            merged[key] = {"entity_type": e["entity_type"], "name": e["name"], "description": [e["description"]], "aliases": list(e.get("aliases", []))}
+            continue
+
+        m = merged[key]
+
+        # --- merge descriptions (fuzzy) ---
+        desc = e["description"]
+        if not any(similar(desc, d) for d in m["description"]):
+            m["description"].append(desc)
+
+        # --- merge aliases (fuzzy) ---
+        for alias in e.get("aliases", []):
+            if not any(similar(alias, a) for a in m["aliases"]):
+                m["aliases"].append(alias)
+
+    return list(merged.values())
+
+
+def stage3_validate_and_structure(entity_types: List[str], raw_entities: List[Dict[str, Any]], chapter_num: int, chapter_title: str, max_retries: int = 2) -> Dict[str, List[Dict[str, Any]]]:
     """
     Stage 2: Validate and structure entities with proper schemas.
 
@@ -332,7 +378,7 @@ def stage2_validate_and_structure(raw_entities: List[Dict[str, Any]], chapter_nu
 
     if not raw_entities:
         # Return empty structure
-        return {entity_type: [] for entity_type in ENTITY_TYPES}
+        return {entity_type: [] for entity_type in entity_types}
 
     # Build schemas for prompt
     schemas = {
@@ -349,7 +395,7 @@ def stage2_validate_and_structure(raw_entities: List[Dict[str, Any]], chapter_nu
 
     for attempt in range(max_retries + 1):
         try:
-            result = prompt_builder(prompt, FAST_MODEL_CONFIG)
+            result = prompt_builder(prompt, STAGE_3_LLM_CONFIG)
 
             # Ensure all entity types present
             structured = {entity_type: result.get(entity_type, []) for entity_type in ENTITY_TYPES}
@@ -379,11 +425,26 @@ def extract_entities_from_chapter(chapter: Dict[str, Any], accumulated_entities:
     # Stage 1: Unified extraction
     print("  Stage 1: Extracting all entities...", end=" ")
     raw_entities = stage1_unified_extraction(chapter_text, chapter_num, chapter_title, accumulated_entities)
+    save_json_to_file(raw_entities, DATA_TEMP_PATH / "extract_entities" / str(FILE_ENTITIES_RAW.stem + f".chapter_{chapter_num}_stage1_TEMP.json"), indent=2)
     print(f"✓ {len(raw_entities)} entities found")
 
-    # Stage 2: Validate and structure
-    print("  Stage 2: Validating and structuring...", end=" ")
-    structured_entities = stage2_validate_and_structure(raw_entities, chapter_num, chapter_title)
+    # Stage 2: Merge entities before validation to reduce size of the prompt
+    merged_entities = stage2_merge_entities(raw_entities)
+    save_json_to_file(merged_entities, DATA_TEMP_PATH / "extract_entities" / str(FILE_ENTITIES_RAW.stem + f".chapter_{chapter_num}_stage2_TEMP.json"), indent=2)
+    print(f"Merged Entities: {dict(Counter(e['entity_type'] for e in merged_entities))}")
+
+    # Stage 3: Validate and structure
+    print("  Stage 3: Validating and structuring...", end=" ")
+    entity_groups = defaultdict(list)
+    for e in merged_entities:
+        entity_groups[e["entity_type"]].append(e)
+    structured_locations = stage3_validate_and_structure(["locations"], entity_groups.get("location", []), chapter_num, chapter_title)
+    structured_objects = stage3_validate_and_structure(["objects"], entity_groups.get("object", []), chapter_num, chapter_title)
+    structured_events = stage3_validate_and_structure(["events"], entity_groups.get("event", []), chapter_num, chapter_title)
+    structured_concepts = stage3_validate_and_structure(["concepts"], entity_groups.get("concept", []), chapter_num, chapter_title)
+    structured_characters_groups = stage3_validate_and_structure(["characters", "groups"], entity_groups.get("character", []) + entity_groups.get("group", []), chapter_num, chapter_title)
+    structured_entities = merge_dicts(structured_locations, structured_objects, structured_events, structured_concepts, structured_characters_groups)
+    save_json_to_file(merged_entities, DATA_TEMP_PATH / "extract_entities" / str(FILE_ENTITIES_RAW.stem + f".chapter_{chapter_num}_stage3_TEMP.json"), indent=2)
 
     # Count totals
     total = sum(len(structured_entities.get(et, [])) for et in ENTITY_TYPES)
@@ -422,7 +483,6 @@ def extract_all_entities(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         return all_entities
 
     print(f"\n🔍 Processing {len(chapters_to_process)} chapters (starting from {start_chapter})...")
-    print(f"Using model: {REASONING_MODEL_CONFIG['model']}")
 
     for chapter in chapters_to_process:
         try:
@@ -496,32 +556,37 @@ def main():
     config = get_config()
     paths = get_paths()
     global \
-        REASONING_MODEL_CONFIG, \
-        FAST_MODEL_CONFIG, \
+        STAGE_1_LLM_CONFIG, \
         ENTITY_TYPES, \
         ENTITY_SCHEMAS, \
         UNIFIED_EXTRACTION_PROMPT, \
         FILE_ENTITIES_RAW, \
+        DATA_TEMP_PATH, \
+        FILE_BOOKS_CHUNKED, \
         VALIDATION_PROMPT, \
         checkpoint_manager, \
         ACCUMULATED_ENTITY_TYPES, \
-        ENTITY_EXTRACTION_CONFIG
-    REASONING_MODEL_CONFIG = config.REASONING_MODEL_CONFIG
-    FAST_MODEL_CONFIG = config.FAST_MODEL_CONFIG
+        ENTITY_EXTRACTION_CONFIG, \
+        STAGE_3_LLM_CONFIG
+
+    STAGE_1_LLM_CONFIG = config.MEDIUM_MODEL_CONFIG
+    STAGE_3_LLM_CONFIG = config.MEDIUM_MODEL_CONFIG
     ENTITY_EXTRACTION_CONFIG = config.ENTITY_EXTRACTION_CONFIG
     ENTITY_TYPES = config.ENTITY_TYPES
     ENTITY_SCHEMAS = config.ENTITY_SCHEMAS
     UNIFIED_EXTRACTION_PROMPT = config.UNIFIED_EXTRACTION_PROMPT
     VALIDATION_PROMPT = config.VALIDATION_PROMPT
     FILE_ENTITIES_RAW = paths.FILE_ENTITIES_RAW
+    DATA_TEMP_PATH = paths.DATA_TEMP_PATH
     ACCUMULATED_ENTITY_TYPES = config.ACCUMULATED_ENTITY_TYPES
+    FILE_BOOKS_CHUNKED = paths.FILE_BOOKS_CHUNKED
 
     checkpoint_manager = _CheckpointManager()
 
-    chapters = load_json_from_file(paths.FILE_BOOK_00_PROCESSED)
+    testing_connection(STAGE_1_LLM_CONFIG)
+    testing_connection(STAGE_3_LLM_CONFIG)
 
-    testing_connection(FAST_MODEL_CONFIG)
-    testing_connection(REASONING_MODEL_CONFIG)
+    chapters = load_json_from_file(paths.FILE_BOOK_00_PROCESSED)
 
     # Extract entities
     all_entities = extract_all_entities(chapters)
@@ -539,9 +604,55 @@ def main():
         "ENTITIES EXTRACTION",
         "02_extract_entities",
         tables=True,
-        configuration_section=REASONING_MODEL_CONFIG,
+        configuration_section=STAGE_1_LLM_CONFIG,
     )
 
 
 if __name__ == "__main__":
     main()
+    # config = get_config()
+    # paths = get_paths()
+
+    # REASONING_MODEL_CONFIG = config.MEDIUM_MODEL_CONFIG
+    # MEDIUM_MODEL_CONFIG = config.MEDIUM_MODEL_CONFIG
+    # FAST_MODEL_CONFIG = config.FAST_MODEL_CONFIG
+    # ENTITY_EXTRACTION_CONFIG = config.ENTITY_EXTRACTION_CONFIG
+    # ENTITY_TYPES = config.ENTITY_TYPES
+    # ENTITY_SCHEMAS = config.ENTITY_SCHEMAS
+    # UNIFIED_EXTRACTION_PROMPT = config.UNIFIED_EXTRACTION_PROMPT
+    # VALIDATION_PROMPT = config.VALIDATION_PROMPT
+    # FILE_ENTITIES_RAW = paths.FILE_ENTITIES_RAW
+    # DATA_TEMP_PATH = paths.DATA_TEMP_PATH
+    # ACCUMULATED_ENTITY_TYPES = config.ACCUMULATED_ENTITY_TYPES
+    # FILE_BOOKS_CHUNKED = paths.FILE_BOOKS_CHUNKED
+
+    # entities = load_json_from_file("C:\\Users\\Usuario\\Documents\\_AI\\westmarch-codex\\data\\temp\\extract_entities\\entities_raw.chapter_1_stage1_TEMP.json")
+    # merged_entities = stage2_merge_entities(entities)
+    # chapter_num = 1
+    # save_json_to_file(merged_entities, DATA_TEMP_PATH / "extract_entities" / str(FILE_ENTITIES_RAW.stem + f".chapter_{chapter_num}_stage2_TEMP.json"), indent=2)
+    # print(f"Merged Entities: {dict(Counter(e['entity_type'] for e in merged_entities))}")
+    # # Stage 3: Validate and structure
+    # print("  Stage 3: Validating and structuring...", end=" ")
+    # # structured_entities = stage3_validate_and_structure(merged_entities, chapter_num, chapter_title)
+
+    # entity_groups = defaultdict(list)
+    # for e in merged_entities:
+    #     entity_groups[e["entity_type"]].append(e)
+    # chapter_title = "TITLE"
+    # structured_locations = stage3_validate_and_structure(["locations"], entity_groups.get("location", []), chapter_num, chapter_title)
+    # structured_objects = stage3_validate_and_structure(["objects"], entity_groups.get("object", []), chapter_num, chapter_title)
+    # structured_events = stage3_validate_and_structure(["events"], entity_groups.get("event", []), chapter_num, chapter_title)
+    # structured_concepts = stage3_validate_and_structure(["concepts"], entity_groups.get("concept", []), chapter_num, chapter_title)
+    # structured_characters_groups = stage3_validate_and_structure(["characters", "groups"], entity_groups.get("character", []) + entity_groups.get("group", []), chapter_num, chapter_title)
+
+    # structured_entities = merge_dicts(structured_locations, structured_objects, structured_events, structured_concepts, structured_characters_groups)
+    # save_json_to_file(merged_entities, DATA_TEMP_PATH / "extract_entities" / str(FILE_ENTITIES_RAW.stem + f".chapter_{chapter_num}_stage3_TEMP.json"), indent=2)
+
+    # total = sum(len(structured_entities.get(et, [])) for et in ENTITY_TYPES)
+    # print(f"✓ {total} entities structured")
+
+    # # Show breakdown
+    # for entity_type in ENTITY_TYPES:
+    #     count = len(structured_entities.get(entity_type, []))
+    #     if count > 0:
+    #         print(f"    {entity_type:12} {count}")

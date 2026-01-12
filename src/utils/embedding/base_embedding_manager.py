@@ -22,3 +22,11 @@ class BaseEmbeddingManager(ABC):
             total_tokens: int
         """
         pass
+
+    @abstractmethod
+    def tokenize_text(self, text: str) -> List[int]:
+        pass
+
+    @abstractmethod
+    def token_count(self, text: str) -> int:
+        pass

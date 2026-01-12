@@ -2,14 +2,7 @@
 Generic Westmarch Codex Configuration
 """
 
-from enum import Enum
-
 from dotenv import load_dotenv
-
-
-class EmbeddingManagers(str, Enum):
-    OLLAMA = "ollama"
-    SENTENCE_TRANSFORMER = "sentence_transformer"
 
 
 class Config:
@@ -41,6 +34,14 @@ class Config:
             "timeout": 3000,
         }
 
+        self.MEDIUM_MODEL_CONFIG = {
+            "model": "qwen2.5:14b-instruct-q4_K_M",
+            "base_url": "http://localhost:11434",
+            "temperature": 0.1,
+            "max_tokens": 8192,
+            "max_prompt_length": 32768,
+            "timeout": 3000,  # Shorter timeout
+        }
         # Fast model for structured tasks (validation, formatting, simple extraction)
         self.FAST_MODEL_CONFIG = {
             "model": "qwen2.5:7b-instruct",
@@ -55,7 +56,8 @@ class Config:
         self.LLM_CONFIG = self.REASONING_MODEL_CONFIG  # Default to reasoning model
 
         self.ENTITY_EXTRACTION_CONFIG = {
-            "context_window_chars": 10000,
+            "context_window_chars": 5000,
+            "use_semantic_chunks": False,
         }
 
         self.ENTITY_TYPES = [
@@ -279,6 +281,7 @@ class Config:
             - Use EXACT field names from schemas (e.g., "name" not "character_name" or "location_name")
             - Fill all required fields - use null or [] if unknown
             - Maintain aliases from raw extraction
+            - DO NOT put any comments in the form of "// This is a comment" because that breaks the json
 
             Return properly structured entities:
             {{
@@ -507,28 +510,102 @@ class Config:
             "EMBEDDING_MODEL_NAME": "intfloat/e5-large-v2",
             "EMBEDDING_MODEL_MAX_TOKENS": 512,
             "EMBEDDING_MODEL_DIMENSION": 1024,
-            "EMBEDDING_MODEL_RAW_PREFIX": "passage: ",
+            "EMBEDDING_MODEL_RAW_PREFIX": "",
             "EMBEDDING_MODEL_SEARCH_PREFIX": "query: ",
             "EMBEDDING_MODEL_DOCUMENT_PREFIX": "passage: ",
         }
 
         self.EMBEDDING_MODEL = self.EMBEDDING_MODEL_INTFLOAT_E5_LARGE_V2
-        self.EMBEDDING_MANAGER = EmbeddingManagers.SENTENCE_TRANSFORMER.value
 
-        self.EMBEDDING_SENTENCE_TRANSFORMER_CONFIG = {
+        self.EMBEDDING_SENTENCE_TRANSFORMER_CONFIG_INTFLOAT_E5_LARGE_V2 = {
+            "EMBEDDING_MANAGER": "sentence_transformer",
             "EMBEDDING_METHOD": "BATCH",  # ONE_BY_ONE, BATCH, BATCH_IN_PARALLEL
             "EMBEDDING_BATCH_SIZE": 32,
-            "EMBEDDING_MODEL": self.EMBEDDING_MODEL,
+            "EMBEDDING_MODEL_CONFIG": self.EMBEDDING_MODEL_INTFLOAT_E5_LARGE_V2,
         }
 
-        self.CHUNKING_STRATEGY = {
-            "BOOKS_CHUNKING_STRATEGY_NAME": "semantic",
-            "SEMANTIC_MAX_CHUNK_TOKENS": 1000,
-            "SEMANTIC_MIN_CHUNK_TOKENS": 300,
-            "SEMANTIC_OVERLAP_TOKENS": 0,
-            "SEMANTIC_SIMILARITY_THRESHOLD": 0.82,  # cosine similarity breakpoint
-            "MIN_BOOKS_CHUNKS_SIZE_CHARACTERS": 300,
+        self.EMBEDDING_SENTENCE_TRANSFORMER_CONFIG_NOMIC_1_5 = {
+            "EMBEDDING_MANAGER": "sentence_transformer",
+            "EMBEDDING_METHOD": "BATCH",  # ONE_BY_ONE, BATCH, BATCH_IN_PARALLEL
+            "EMBEDDING_BATCH_SIZE": 32,
+            "EMBEDDING_MODEL_CONFIG": self.EMBEDDING_MODEL_NOMIC_1_5,
         }
+
+        self.CHUNKING_STRATEGY_INTFLOAT_E5_LARGE_V2 = {
+            "BOOKS_CHUNKING_STRATEGY_NAME": "semantic",
+            "CHUNK_TYPE_FOR_PREFIX": "RAW",
+            "BASE_UNIT": "sentence",  # for nomic "paragraph"
+            "EMBEDDING_MANAGER_CONFIG": self.EMBEDDING_SENTENCE_TRANSFORMER_CONFIG_INTFLOAT_E5_LARGE_V2,
+            # Sweet spot: Small enough for precise retrieval, large enough for context
+            "SEMANTIC_MAX_CHUNK_TOKENS": 500,  # 1500 for nomic
+            # High floor ensures substantive content
+            "SEMANTIC_MIN_CHUNK_TOKENS": 240,  # MAX / 2
+            # Goldilocks overlap: enough for boundaries, not wasteful
+            "SEMANTIC_OVERLAP_TOKENS": 0,  # MAX * 0.1
+            # YOUR tested value - don't change what works!
+            "SEMANTIC_SIMILARITY_THRESHOLD": 0.80,
+            # Strong minimum prevents fragments
+            "MIN_BOOKS_CHUNKS_SIZE_TOKENS": 50,
+        }
+
+        self.CHUNKING_STRATEGY_NOMIC = {
+            "BOOKS_CHUNKING_STRATEGY_NAME": "semantic",
+            "CHUNK_TYPE_FOR_PREFIX": "RAW",
+            "BASE_UNIT": "paragraph",  # for nomic "paragraph"
+            "EMBEDDING_MANAGER_CONFIG": self.EMBEDDING_SENTENCE_TRANSFORMER_CONFIG_NOMIC_1_5,
+            # Sweet spot: Small enough for precise retrieval, large enough for context
+            "SEMANTIC_MAX_CHUNK_TOKENS": 4000,  # 1500 for nomic
+            # High floor ensures substantive content
+            "SEMANTIC_MIN_CHUNK_TOKENS": 750,  # MAX / 2
+            # Goldilocks overlap: enough for boundaries, not wasteful
+            "SEMANTIC_OVERLAP_TOKENS": 0,  # MAX * 0.1
+            # YOUR tested value - don't change what works!
+            "SEMANTIC_SIMILARITY_THRESHOLD": 0.72,
+            # Strong minimum prevents fragments
+            "MIN_BOOKS_CHUNKS_SIZE_TOKENS": 75,
+        }
+
+        self.CHUNKING_STRATEGY = self.CHUNKING_STRATEGY_INTFLOAT_E5_LARGE_V2
+
+        self.SCENE_DETECTION_CONFIG_INTFLOAT_E5_LARGE_V2 = {
+            "EMBEDDING_MANAGER_CONFIG": self.EMBEDDING_SENTENCE_TRANSFORMER_CONFIG_INTFLOAT_E5_LARGE_V2,
+            # Scene boundary detection
+            "SCENE_SIMILARITY_THRESHOLD": 0.87,  # Valleys below this = scene break
+            # Smoothing (optional - reduces noise)
+            "WINDOW_SIZE": 1,  # Moving average over N similarities
+            # Minimum scene size
+            "MIN_SCENE_CHUNKS": 2,  # Scenes must have at least N chunks
+            "MIN_SCENE_TOKENS": 500,  # Or at least N tokens
+            # Valley detection sensitivity
+            "VALLEY_MIN_DROP": 0.02,  # Similarity must drop by at least this much
+            # Output
+            "VISUALIZE_SCENES": True,  # Create similarity graphs
+            "RECOVERY_LIMIT": 0.05,  # NEW: prevents noise from triggering
+            "STRONG_DROP_THRESHOLD": 0.04,  # NEW: Strong drops don't need local min
+            "USE_ADAPTIVE_PARAMETERS": True,
+            "ADAPTIVE_STRATEGY": "aggressive",
+        }
+
+        self.SCENE_DETECTION_CONFIG_NOMIC = {
+            "EMBEDDING_MANAGER_CONFIG": self.EMBEDDING_SENTENCE_TRANSFORMER_CONFIG_NOMIC_1_5,
+            # Scene boundary detection
+            "SCENE_SIMILARITY_THRESHOLD": 0.87,  # Valleys below this = scene break
+            # Smoothing (optional - reduces noise)
+            "WINDOW_SIZE": 1,  # Moving average over N similarities
+            # Minimum scene size
+            "MIN_SCENE_CHUNKS": 1,  # Scenes must have at least N chunks
+            "MIN_SCENE_TOKENS": 500,  # Or at least N tokens
+            # Valley detection sensitivity
+            "VALLEY_MIN_DROP": 0.02,  # Similarity must drop by at least this much
+            # Output
+            "VISUALIZE_SCENES": True,  # Create similarity graphs
+            "RECOVERY_LIMIT": 0.05,  # NEW: prevents noise from triggering
+            "STRONG_DROP_THRESHOLD": 0.04,  # NEW: Strong drops don't need local min
+            "USE_ADAPTIVE_PARAMETERS": True,
+            "ADAPTIVE_STRATEGY": "aggressive",
+        }
+
+        self.SCENE_DETECTION_CONFIG = self.SCENE_DETECTION_CONFIG_INTFLOAT_E5_LARGE_V2
 
     def __repr__(self):
         """String representation showing all config attributes"""
@@ -553,17 +630,6 @@ def print_config():
     config = get_config()
 
     print(config.__repr__)
-
-
-def get_embedding_manager_config(embedding_manager: str):
-    config = get_config()
-
-    if embedding_manager == EmbeddingManagers.OLLAMA.value:
-        return config.OLLAMA_CONFIG
-    elif embedding_manager == EmbeddingManagers.SENTENCE_TRANSFORMER.value:
-        return config.EMBEDDING_SENTENCE_TRANSFORMER_CONFIG
-    else:
-        raise ValueError(f"Unknown embedding backend: {embedding_manager}")
 
 
 def configuration_to_string(configuration_section: dict, indent: int = 0) -> str:

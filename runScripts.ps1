@@ -1,5 +1,7 @@
 conda activate westmarch
 
+python -m spacy download en_core_web_sm
+
 # List of Python modules to run
 $modules = @(
     "src.extraction.01_preprocess_book"
