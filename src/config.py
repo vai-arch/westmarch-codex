@@ -57,7 +57,7 @@ class Config:
 
         self.ENTITY_EXTRACTION_CONFIG = {
             "context_window_chars": 5000,
-            "use_semantic_chunks": False,
+            "use_semantic_chunks": True,
         }
 
         self.ENTITY_TYPES = [
@@ -300,30 +300,31 @@ class Config:
 
             CHARACTER TO TRACK:
             Name: {character_name}
-            Known aliases: {aliases}
+            Known aliases (ALIAS LIST): {aliases}
+            
+            TASK: Count occurrences for the specific character inside the CHAPTER TEXT (search for character name AND all aliases):
 
-            CHAPTER TEXT:
-            {chapter_text}
-
-            TASK: Count occurrences for the specific character (search for character name AND all aliases):
-
-            1. MENTIONS: Total times the character is referenced by name or alias
-            2. DIALOGUES: Times the character speaks (has dialogue attributed to them)
-            3. ACTIONS: Times the character performs significant actions (verbs with character as subject)
+            1. DIALOGUES: Times the character speaks (has dialogue attributed to them) in the CHAPTER TEXT. Search for things like "said xxx", "answered xxx", "screamed xxx", etc. Count one dialog for each consecutive interaction with another character. If it speak 4 consecutive sentences with the same character it only count once
+            2. MENTIONS: Total times the character is referenced BY OTHERS using his name or alias in the CHAPTER TEXT. If it is mentioned in a direct speech, it only count as dialog, NOT mentions. For example replied Bard., answered Bard are dialogs from Bard, not mentions. 
+            3. ACTIONS: Times the character performs significant actions (verbs with character as subject) in the CHAPTER TEXT
             4. JUSTIFICATION your counts briefly.
-            5. ALIASES not already listed that were found in the text.
+            5. ALIASES not already listed that were found  in the CHAPTER TEXT.
 
             CRITICAL: Never guess - only count what is explicitly in the text. Always justify your count. If the character doesnt appear, return zeros. Never count a different character. Only add new aliases, not already know ones.
 
             Return ONLY this JSON (no explanation):
             {{
             "chapter_num": {chapter_num},
-            "mentions": <number>,
+            "mentions_by_others": <number>,
             "dialogues": <number>,
             "actions": <number>,
             "justification": "brief explanation of counts",
-            "new_aliases": [list of any NEW aliases found]
+            "new_aliases": [list of any NEW aliases, not yet in the ALIAS LIST found in the mentions]
             }}
+
+            CHAPTER TEXT:
+            {chapter_text}
+
             """
 
         # === ENTITY DEDUPLICATION CONFIG ===

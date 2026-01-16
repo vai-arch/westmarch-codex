@@ -17,6 +17,7 @@ Entity Types Extracted:
 
 # Import configuration
 import json
+import re
 import time
 from collections import defaultdict
 from difflib import SequenceMatcher
@@ -25,7 +26,7 @@ from typing import Any, Counter, Dict, List
 from src.config import get_config
 from src.paths import get_paths
 from src.utils.llm_access.ollama_llm import prompt_builder, testing_connection
-from src.utils.util_files_functions import load_json_from_file, load_jsonl_from_file, save_json_to_file
+from src.utils.util_files_functions import load_json_from_file, load_jsonl_from_file, save_json_to_file, save_text_to_file
 from src.utils.util_statistics import total_statistics_logging
 
 STAGE_1_LLM_CONFIG = None
@@ -216,34 +217,95 @@ def validate_extraction_structure(data: Dict[str, Any]) -> List[str]:
 # =============================================================================
 
 
-def build_context_section(accumulated_entities: Dict[str, List[Dict[str, str]]]) -> str:
-    """Build context section from accumulated entities across all types."""
-
-    if not any(accumulated_entities.values()):
+def build_context_section(accumulated_entities: Dict[str, List[Dict[str, str]]], chapter_text: str, chapter_num: int) -> str:
+    """
+    Build context section with only entities that appear in current chapter.
+    Includes name, aliases, and brief description for context.
+    """
+    if not any(accumulated_entities.values()) or not chapter_text:
         return ""
 
-    context_lines = ["\nPREVIOUSLY EXTRACTED ENTITIES FROM EARLIER CHAPTERS:", "Use these for consistent naming and to recognize aliases:\n"]
+    # Preprocess chapter text once (lowercase for searching)
+    chapter_lower = chapter_text.lower()
+
+    context_lines = ["\nPREVIOUSLY EXTRACTED ENTITIES FROM EARLIER CHAPTERS:", "Use these for consistent naming and to recognize references:\n"]
+
+    entities_found = False
 
     for entity_type in ACCUMULATED_ENTITY_TYPES:
         entities = accumulated_entities.get(entity_type, [])
         if not entities:
             continue
 
-        context_lines.append(f"\n{entity_type.upper()}:")
-        for entity in entities[:20]:  # Limit per type
+        # Filter entities that appear in this chapter
+        relevant_entities = []
+
+        for entity in entities:
             name = entity.get("name", "")
             aliases = entity.get("aliases", [])
-            if aliases:
-                context_lines.append(f"  - {name} (also: {', '.join(aliases)})")
-            else:
-                context_lines.append(f"  - {name}")
+
+            # Build search terms (name + all aliases)
+            search_terms = [name] + aliases
+
+            # Check if any term appears in chapter
+            found = False
+            for term in search_terms:
+                if not term or len(term.strip()) == 0:
+                    continue
+
+                # Multi-word terms: simple substring match (case-insensitive)
+                if " " in term:
+                    if term.lower() in chapter_lower:
+                        found = True
+                        break
+                else:
+                    # Single word: use word boundary regex
+                    if re.search(r"\b" + re.escape(term.lower()) + r"\b", chapter_lower):
+                        found = True
+                        break
+
+            if found:
+                relevant_entities.append(entity)
+
+        # Add relevant entities to context
+        if relevant_entities:
+            entities_found = True
+            context_lines.append(f"\n{entity_type.upper()}:")
+
+            for entity in relevant_entities[:200]:  # Limit to 200 per type
+                name = entity.get("name", "")
+                aliases = entity.get("aliases", [])
+                # description = entity.get("description", "")
+                # role = entity.get("role", "") or entity.get("type", "")
+
+                # Build entity line
+                entity_line = f"  - {name}"
+
+                # Add aliases if present
+                if aliases:
+                    entity_line += f" (also: {', '.join(aliases[:30])})"  # Limit to 3 aliases
+
+                # Add brief description/role if available (truncate to avoid bloat)
+                # if description:
+                #     desc_short = description[:80] + "..." if len(description) > 80 else description
+                #     entity_line += f" - {desc_short}"
+                # elif role:
+                #     entity_line += f" [{role}]"
+
+                context_lines.append(entity_line)
+
+    if not entities_found:
+        return ""  # No relevant entities found, return empty context
 
     context_lines.append("")
+    save_text_to_file("\n".join(context_lines), DATA_TEMP_PATH / "extract_entities" / str(FILE_ENTITIES_RAW.stem + f".chapter_{chapter_num}_stage0_TEMP.json"))
     return "\n".join(context_lines)
 
 
-def update_accumulated_entities(accumulated: Dict[str, List[Dict[str, str]]], new_entities: Dict[str, Any]):
+def update_accumulated_entities(accumulated: Dict[str, List[Dict[str, str]]], new_entities: Dict[str, Any], chapter_num: int):
     """Update accumulated entities with new chapter's entities."""
+
+    added_entities = []
 
     for entity_type in ACCUMULATED_ENTITY_TYPES:
         entities = new_entities.get(entity_type, [])
@@ -270,6 +332,10 @@ def update_accumulated_entities(accumulated: Dict[str, List[Dict[str, str]]], ne
             else:
                 # Add new
                 accumulated[entity_type].append({"name": name, "aliases": aliases if aliases else []})
+                added_entities.append(entity)
+
+    if added_entities:
+        save_json_to_file(added_entities, DATA_TEMP_PATH / "extract_entities" / str(FILE_ENTITIES_RAW.stem + f".chapter_{chapter_num}_stage4_TEMP.json"), indent=2)
 
 
 # =============================================================================
@@ -301,7 +367,7 @@ def stage1_unified_extraction(chapter_text: str, chapter_num: int, chapter_title
         chunks = [chapter_text[i : i + chunk_size] for i in range(0, len(chapter_text), chunk_size)]
 
     # Build context once (shared across chunks)
-    context_section = build_context_section(accumulated_entities)
+    context_section = build_context_section(accumulated_entities, chapter_text, chapter_num)
 
     all_entities = []
 
@@ -347,21 +413,34 @@ def stage2_merge_entities(entities):
     merged = {}
 
     for e in entities:
-        key = (e["entity_type"], e["name"])  # STRICT match
+        etype = e.get("entity_type", "").strip()
+        name = e.get("name", "").strip()
+
+        if not etype or not name:
+            continue  # skip broken entities
+
+        key = (etype, name)  # STRICT match
+
+        desc = e.get("description", "").strip()
+        aliases = e.get("aliases", []) or []
 
         if key not in merged:
-            merged[key] = {"entity_type": e["entity_type"], "name": e["name"], "description": [e["description"]], "aliases": list(e.get("aliases", []))}
+            merged[key] = {
+                "entity_type": etype,
+                "name": name,
+                "description": [desc] if desc else [],
+                "aliases": list(aliases),
+            }
             continue
 
         m = merged[key]
 
         # --- merge descriptions (fuzzy) ---
-        desc = e["description"]
-        if not any(similar(desc, d) for d in m["description"]):
+        if desc and not any(similar(desc, d) for d in m["description"]):
             m["description"].append(desc)
 
         # --- merge aliases (fuzzy) ---
-        for alias in e.get("aliases", []):
+        for alias in aliases:
             if not any(similar(alias, a) for a in m["aliases"]):
                 m["aliases"].append(alias)
 
@@ -461,7 +540,7 @@ def extract_entities_from_chapter(chapter: Dict[str, Any], accumulated_entities:
     result.update(structured_entities)
 
     # Update accumulated entities
-    update_accumulated_entities(accumulated_entities, structured_entities)
+    update_accumulated_entities(accumulated_entities, structured_entities, chapter_num)
 
     return result
 
@@ -569,8 +648,8 @@ def main():
         ENTITY_EXTRACTION_CONFIG, \
         STAGE_3_LLM_CONFIG
 
-    STAGE_1_LLM_CONFIG = config.MEDIUM_MODEL_CONFIG
-    STAGE_3_LLM_CONFIG = config.MEDIUM_MODEL_CONFIG
+    STAGE_1_LLM_CONFIG = config.FAST_MODEL_CONFIG
+    STAGE_3_LLM_CONFIG = config.FAST_MODEL_CONFIG
     ENTITY_EXTRACTION_CONFIG = config.ENTITY_EXTRACTION_CONFIG
     ENTITY_TYPES = config.ENTITY_TYPES
     ENTITY_SCHEMAS = config.ENTITY_SCHEMAS
@@ -602,7 +681,7 @@ def main():
         statistics,
         total_time,
         "ENTITIES EXTRACTION",
-        "02_extract_entities",
+        "04_extract_entities",
         tables=True,
         configuration_section=STAGE_1_LLM_CONFIG,
     )

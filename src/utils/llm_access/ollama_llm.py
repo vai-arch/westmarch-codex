@@ -73,6 +73,10 @@ def prompt_builder(prompt: str, llm_config: dict) -> Dict[str, Any]:
         },
     }
 
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+    save_text_to_file(data=prompt, output_file=get_paths().DATA_TEMP_PATH / f"prompts/{timestamp}_prompt.txt", log=False)
+
     if len(prompt) > llm_config.get("max_prompt_length", 15000):
         print(f"⚠️  Warning: Prompt length ({len(prompt)}) exceeds max limit ({llm_config.get('max_prompt_length', 15000)})")
 
@@ -86,6 +90,7 @@ def prompt_builder(prompt: str, llm_config: dict) -> Dict[str, Any]:
         # Try to parse JSON
         try:
             clean_text = fix_json_almost(response_text)
+            save_text_to_file(data=clean_text, output_file=get_paths().DATA_TEMP_PATH / f"prompts/{timestamp}_response.txt", log=False)
             parsed = json.loads(clean_text)
             return parsed
 
@@ -94,7 +99,7 @@ def prompt_builder(prompt: str, llm_config: dict) -> Dict[str, Any]:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             paths = get_paths()
             output_file = paths.DATA_TEMP_PATH / f"{paths.FILE_ENTITIES_RAW.stem}_{timestamp}.txt"
-            save_text_to_file(data=response_text, output_file=output_file)
+            save_text_to_file(data=response_text, output_file=output_file, log=False)
             raise e
 
     except requests.exceptions.RequestException as e:

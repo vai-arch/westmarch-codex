@@ -503,21 +503,22 @@ def enhance_all_characters(characters: List[Dict[str, Any]], chapters: List[Dict
             chapter_num = chapter["chapter_num"]
 
             # Check config for chunking strategy
-            use_semantic_chunks = ENTITY_EXTRACTION_CONFIG.get("use_semantic_chunks", False)
+            use_semantic_chunks = ENTITY_EXTRACTION_CONFIG["use_semantic_chunks"]
 
             if use_semantic_chunks:
                 # Load semantic chunks for this chapter
-                all_chunks = load_jsonl_from_file(FILE_BOOKS_CHUNKED)
-                chapter_chunks = [c for c in all_chunks if c["chapter_number"] == chapter_num]
-                chunks = [c["text"] for c in chapter_chunks]
+                books_chunks = load_jsonl_from_file(FILE_BOOKS_CHUNKED)
+                chapter_chunks = [c for c in books_chunks if c["chapter_number"] == chapter_num]
+                all_chunks = [c["text"] for c in chapter_chunks]
             else:
                 # Legacy: character-based splitting
-                chunks = []
+                all_chunks = []
                 for i in range(0, len(chapter_text), chunk_size):
-                    chunks.append(chapter_text[i : i + chunk_size])
+                    all_chunks.append(chapter_text[i : i + chunk_size])
 
+            filtered_chunks = []
             # Rest stays the same - check if character appears in chunks
-            for chunk in chunks:
+            for chunk in all_chunks:
                 found = False
                 for term in search_terms:
                     if not term:
@@ -531,9 +532,9 @@ def enhance_all_characters(characters: List[Dict[str, Any]], chapters: List[Dict
                             found = True
                             break
                 if found:
-                    chunks.append(chunk)
+                    filtered_chunks.append(chunk)
 
-            if not chunks:
+            if not filtered_chunks:
                 print("Skipping chapter, no quick mentions found.", end=" ")
                 continue
 
@@ -541,14 +542,14 @@ def enhance_all_characters(characters: List[Dict[str, Any]], chapters: List[Dict
             chapter_mentions = 0
             chapter_dialogues = 0
             chapter_actions = 0
-            for chunk_idx, chunk in enumerate(chunks):
+            for chunk_idx, chunk in enumerate(filtered_chunks):
                 prompt = CHARACTER_STATS_PROMPT.format(character_name=character_name, aliases=aliases_str, chapter_text=chunk, chapter_num=chapter_num)
 
                 for attempt in range(max_retries + 1):
                     try:
                         result = prompt_builder(prompt, REASONING_MODEL_CONFIG)
 
-                        chapter_mentions += result.get("mentions", 0)
+                        chapter_mentions += result.get("mentions_by_others", 0)
                         chapter_dialogues += result.get("dialogues", 0)
                         chapter_actions += result.get("actions", 0)
                         justifications.append(result.get("justification", ""))
@@ -641,11 +642,6 @@ def main():
     for entity_type in deduplicated_entities:
         deduplicated_entities[entity_type] = consolidate_relationships(deduplicated_entities[entity_type])
 
-    # Stage 3: Character enhancement (prominence analysis) WITH STATISTICS and new aliases
-    print("\n" + "=" * 70)
-    print("STAGE 3: CHARACTER PROMINENCE ANALYSIS")
-    print("=" * 70)
-
     # Load chapters for analysis
     chapters = load_json_from_file(paths.FILE_BOOK_00_PROCESSED)
 
@@ -672,7 +668,7 @@ def main():
         "ENTITY DEDUPLICATION - DETAILS",
         "03_deduplicate_entities_details",
         tables=True,
-        configuration_section=None,
+        configuration_section=DEDUPLICATION_CONFIG,
     )
 
 
@@ -684,7 +680,7 @@ def testing_enhance_all_characters():
     DEDUPLICATION_CONFIG = config.DEDUPLICATION_CONFIG
     DEDUPLICATION_LLM_CONFIG = config.DEDUPLICATION_LLM_CONFIG
     DEDUPLICATION_CLEANUP_PROMPT = config.DEDUPLICATION_CLEANUP_PROMPT
-    REASONING_MODEL_CONFIG = config.REASONING_MODEL_CONFIG
+    REASONING_MODEL_CONFIG = config.MEDIUM_MODEL_CONFIG
     FAST_MODEL_CONFIG = config.FAST_MODEL_CONFIG
     ENTITY_TYPES = config.ENTITY_TYPES
     CHARACTER_STATS_PROMPT = config.CHARACTER_STATS_PROMPT
@@ -697,10 +693,10 @@ def testing_enhance_all_characters():
     chapters = load_json_from_file(paths.FILE_BOOK_00_PROCESSED)
     characters = load_json_from_file(paths.FILE_ENTITIES_DEDUPLICATED).get("characters", [])
 
-    # Filter characters → only Bilbo
+    # Filter characters
     test_characters = [c for c in characters if c.get("name") == TEST_CHARACTER_NAME]
 
-    # Filter chapters → only chapter 6
+    # Filter chapters
     test_chapters = [ch for ch in chapters if ch.get("chapter_num") == TEST_CHAPTER]
 
     # Run enrichment only on this small slice
@@ -713,5 +709,16 @@ def testing_enhance_all_characters():
 
 
 if __name__ == "__main__":
-    # main()
-    testing_enhance_all_characters()
+    main()
+    # config = get_config()
+    # paths = get_paths()
+    # DEDUPLICATION_CONFIG = config.DEDUPLICATION_CONFIG
+    # DEDUPLICATION_LLM_CONFIG = config.DEDUPLICATION_LLM_CONFIG
+    # DEDUPLICATION_CLEANUP_PROMPT = config.DEDUPLICATION_CLEANUP_PROMPT
+    # REASONING_MODEL_CONFIG = config.REASONING_MODEL_CONFIG
+    # FAST_MODEL_CONFIG = config.FAST_MODEL_CONFIG
+    # ENTITY_EXTRACTION_CONFIG = config.ENTITY_EXTRACTION_CONFIG
+    # FILE_BOOKS_CHUNKED = paths.FILE_BOOKS_CHUNKED
+    # ENTITY_TYPES = config.ENTITY_TYPES
+    # CHARACTER_STATS_PROMPT = config.CHARACTER_STATS_PROMPT
+    # testing_enhance_all_characters()
